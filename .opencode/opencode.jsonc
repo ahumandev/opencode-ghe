@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "file:///home/me/experimental/opencode-ghe/dist/plugin.js",
+      {
+        "baseUrl": "https://copilot-api.bmw.ghe.com"
+      }
+    ]
+  ],
+  "model": "ghe/claude-sonnet-5"
+}

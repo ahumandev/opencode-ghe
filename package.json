@@ -1,0 +1,44 @@
+{
+  "name": "opencode-ghe",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/plugin.d.ts",
+      "default": "./dist/plugin.js"
+    },
+    "./ghe-protocol": {
+      "types": "./dist/ghe-protocol.d.ts",
+      "default": "./dist/ghe-protocol.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    },
+    "./catalog": {
+      "types": "./dist/catalog.d.ts",
+      "default": "./dist/catalog.js"
+    },
+    "./ai-sdk-bridge": {
+      "types": "./dist/ai-sdk-bridge.d.ts",
+      "default": "./dist/ai-sdk-bridge.js"
+    }
+  },
+  "scripts": {
+    "probe": "bun run src/cli.ts",
+    "test": "bun run build && bun test tests/*.test.ts",
+    "typecheck": "bun run tsc --noEmit",
+    "clean": "bun -e \"import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true });\"",
+    "build": "bun run clean && bun run tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "3.0.8",
+    "@opencode-ai/plugin": "1.18.10"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

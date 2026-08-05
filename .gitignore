@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output and TypeScript cache
+dist/
+*.tsbuildinfo
+
+# Local environment and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Coverage reports
+coverage/
+
+# Editor and operating system files
+.DS_Store
+.idea/
+.vscode/
+
+# Autocode
+.agents/jobs/
+.agents/skills/learned-*
+.agents/scripts/

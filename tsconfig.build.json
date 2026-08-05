@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false
+  },
+  "include": [
+    "src/plugin.ts",
+    "src/ai-sdk-bridge.ts",
+    "src/ghe-protocol.ts",
+    "src/config.ts",
+    "src/catalog.ts",
+    "src/ghe-protocol/**/*.ts"
+  ],
+  "exclude": [
+    "tests",
+    "src/cli.ts",
+    "src/contract-probe.ts"
+  ]
+}

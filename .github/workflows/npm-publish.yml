@@ -1,0 +1,62 @@
+name: npm publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish and release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Upgrade npm
+        run: |
+          npm install -g npm@11.18.0
+          npm --version
+      - name: Install dependencies
+        run: npm ci
+      - name: Test
+        run: bun test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Verify package contents
+        run: npm pack --dry-run
+      - name: Strip empty npm authToken (enable OIDC trusted publishing)
+        run: |
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          [ -f "$npmrc" ] && sed -i '/_authToken/d' "$npmrc" || true
+      - name: Publish package
+        run: npm publish --provenance --access public
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          generate_release_notes: "true"
