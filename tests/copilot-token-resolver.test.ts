@@ -346,7 +346,7 @@ describe("Copilot chat contract", () => {
     expect(body(calls[0] as Call).messages).toEqual([{ role: "assistant", content: "rules" }, { role: "user", content: "hello" }]);
     expect(body(calls[3] as Call).messages).toEqual([{ role: "system", content: "rules" }, { role: "user", content: "hello" }]);
     expect(body(calls[4] as Call).messages).toEqual([{ role: "assistant", content: "rules" }, { role: "user", content: "hello" }]);
-    expect(body(calls[5] as Call).input).toEqual([{ role: "system", content: "rules" }, { role: "user", content: "hello" }]);
+    expect(body(calls[5] as Call).input).toEqual([{ role: "system", content: [{ type: "input_text", text: "rules" }] }, { role: "user", content: [{ type: "input_text", text: "hello" }] }]);
   });
 
   test("returns exact redacted adapter HTTP, network, malformed JSON, and schema errors", async () => {

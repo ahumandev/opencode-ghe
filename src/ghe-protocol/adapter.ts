@@ -1,8 +1,9 @@
 import { BUILT_IN_MODEL_PROFILES, normalizeBuiltInModelProfiles } from "./config.ts";
 import { resolveCredential } from "./credentials.ts";
-import { AuthenticationError, HttpError, MalformedResponseError, NetworkError } from "./errors.ts";
+import { AuthenticationError, HttpError, InvalidRequestError, MalformedResponseError, NetworkError } from "./errors.ts";
 import { normalizeResponse } from "./normalize.ts";
 import { buildBody, selectProfile, validateConfig, validateRequest } from "./request.ts";
+import { buildResponsesBody } from "./responses-request.ts";
 import { parseStream } from "./sse.ts";
 import type { GheProtocolAdapter, GheProtocolConfig, GheRequest, NormalizedResponse, NormalizedStreamEvent } from "./types.ts";
 import { joinUrlPath } from "../url.ts";
@@ -51,7 +52,13 @@ interface PreparedRequest {
 async function prepare(config: GheProtocolConfig, fetcher: typeof fetch, request: GheRequest, stream: boolean, abortSignal: AbortSignal | undefined): Promise<PreparedRequest> {
   validateRequest(request);
   const profile = selectProfile(config, request.model);
+  if (profile.endpoint === "chat" && request.messages.some((message) => message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0)) {
+    throw new InvalidRequestError("Chat requests do not support assistant tool calls.");
+  }
   const requestId = config.requestIdFactory?.() || crypto.randomUUID();
+  const body = profile.endpoint === "responses"
+    ? buildResponsesBody(profile, request, stream, profile.systemRole ?? config.systemRole ?? "assistant")
+    : undefined;
   const credential = await resolveCredential(config, requestId, fetcher);
   const baseUrl = credential.apiEndpoint ?? config.baseUrl;
   const url = new URL(joinUrlPath(baseUrl, profile.endpoint === "chat" ? "chat/completions" : "responses"));
@@ -70,7 +77,7 @@ async function prepare(config: GheProtocolConfig, fetcher: typeof fetch, request
     "content-type": "application/json",
     Authorization: `Bearer ${credential.token}`,
   };
-  const operation = await fetchWithTimeout(fetcher, url, headers, buildBody(profile, request, stream, profile.systemRole ?? config.systemRole ?? "assistant"), config.timeoutMs, requestId, abortSignal);
+  const operation = await fetchWithTimeout(fetcher, url, headers, body ?? buildBody(profile, request, stream, profile.systemRole ?? config.systemRole ?? "assistant"), config.timeoutMs, requestId, abortSignal);
   return { requestId, endpoint: profile.endpoint, ...operation };
 }
 async function fetchWithTimeout(fetcher: typeof fetch, url: URL, headers: Record<string, string>, body: Record<string, unknown>, timeoutMs: number | undefined, requestId: string, abortSignal: AbortSignal | undefined): Promise<{ response: Response; cleanup(): void }> {
@@ -137,7 +144,14 @@ async function safeHttpErrorDetails(response: Response): Promise<{ contentType?:
   try {
     const contentType = normalizeContentType(response.headers.get("content-type"));
     const providerRequestId = safeProviderRequestId(response.headers.get("x-github-request-id") ?? response.headers.get("x-request-id"));
-    if (!isJsonContentType(contentType)) return { ...(contentType === undefined ? {} : { contentType }), ...(providerRequestId === undefined ? {} : { providerRequestId }) };
+    if (!isJsonContentType(contentType)) {
+      const providerMessage = contentType === "text/plain" ? await boundedPlainText(response) : undefined;
+      return {
+        ...(contentType === undefined ? {} : { contentType }),
+        ...(providerRequestId === undefined ? {} : { providerRequestId }),
+        ...(providerMessage === undefined ? {} : { providerMessage }),
+      };
+    }
     const payload = await boundedJson(response);
     const providerError = providerErrorFields(payload);
     return {
@@ -190,6 +204,44 @@ async function boundedJson(response: Response): Promise<unknown> {
   try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown; } catch { return undefined; }
 }
 
+async function boundedPlainText(response: Response): Promise<string | undefined> {
+  const bytes = await boundedBytes(response);
+  if (bytes === undefined) return undefined;
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return undefined; }
+  return safeProviderMessage(text);
+}
+
+async function boundedBytes(response: Response): Promise<Uint8Array | undefined> {
+  if (response.body === null) return undefined;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined || value.byteLength > MAX_PROVIDER_ERROR_BODY_BYTES - length) return undefined;
+      chunks.push(value);
+      length += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch((): undefined => undefined);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function containsUnsafeProviderMessage(value: string): boolean {
+  return /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(value)
+    || /<\s*(?:!|\/|\?|[a-z])/i.test(value);
+}
+
 function providerErrorFields(value: unknown): { providerCode?: string; providerMessage?: string } {
   const root = record(value);
   const source = record(root?.error) ?? root;
@@ -207,7 +259,7 @@ function safeProviderCode(value: unknown): string | undefined {
 }
 
 function safeProviderMessage(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const redacted = value.replace(/\b(?:authorization\s*(?:=|:)\s*(?:bearer\s+)?(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+)|bearer\s+(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+)|(?:token|secret|cookie|api[_ -]?key|password)\s*(?:=|:)\s*(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+))/gi, "[REDACTED]").replace(/\s+/g, " ").trim();
+  if (typeof value !== "string" || containsUnsafeProviderMessage(value)) return undefined;
+  const redacted = value.replace(/(?:["']?\b(?:authorization|access[_ -]?token|refresh[_ -]?token|token|secret|cookie|set-cookie|api[_ -]?key|password|device[_ -]?code)\b["']?\s*(?:=|:)\s*(?:bearer\s+)?(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+)|\bbearer\s+(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;]+))/gi, "[REDACTED]").replace(/\s+/g, " ").trim();
   return redacted.length === 0 ? undefined : redacted.slice(0, MAX_PROVIDER_ERROR_VALUE_LENGTH);
 }

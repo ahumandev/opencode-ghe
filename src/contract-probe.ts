@@ -2,7 +2,7 @@ import { joinUrlPath } from "./url.ts";
 
 export const DEFAULT_BASE_URL = "https://ghe.example.test";
 export const FIXED_PROMPT = "Reply with OK.";
-export const RESPONSES_MODELS = new Set<string>(["gpt-5.6-terra", "gpt-5.6-luna"]);
+export const RESPONSES_MODELS = new Set<string>(["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini"]);
 export const REDACTED = "<redacted>";
 
 export type EndpointKind = "chat" | "responses";

@@ -31,13 +31,20 @@ export interface GheProtocolConfig {
   readonly systemRole?: SystemRoleMode;
 }
 
-export type MessageRole = "system" | "user" | "assistant" | "tool";
+export type MessageRole = "system" | "developer" | "user" | "assistant" | "tool";
+
+export interface GheAssistantToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
+}
 
 export interface GheMessage {
   readonly role: MessageRole;
   readonly content: string;
   readonly name?: string;
   readonly toolCallId?: string;
+  readonly toolCalls?: readonly GheAssistantToolCall[];
 }
 
 export interface GheTool {

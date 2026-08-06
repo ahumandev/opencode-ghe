@@ -40,17 +40,51 @@ describe("GHE AI SDK bridge", () => {
     expect(result).toEqual({ content: [{ type: "text", text: "Done" }, { type: "reasoning", text: "Why" }, { type: "tool-call", toolCallId: "call-2", toolName: "lookup", input: '{"id":2}' }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage: { inputTokens: { total: 2, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 3, text: undefined, reasoning: 1 } }, warnings: expect.arrayContaining([{ type: "unsupported", feature: "topP" }, { type: "unsupported", feature: "responseFormat" }, { type: "unsupported", feature: "headers", details: "Adapter owns request headers." }]), providerMetadata: { ghe: { requestId: "client", providerRequestId: "server" } } });
   });
 
+  test("maps AI SDK assistant tool calls and ordered tool results for Responses", async () => {
+    let request: GheRequest | undefined;
+    const model = createGheLanguageModel({
+      complete: async (value): Promise<NormalizedResponse> => {
+        request = value;
+        return { requestId: "client", text: "", reasoning: "", toolCalls: [], finishReason: "stop", usage: {} };
+      },
+      stream: (): AsyncIterable<NormalizedStreamEvent> => empty(),
+    }, "gpt-5.6-terra");
+    await model.doGenerate(call({
+      prompt: [
+        { role: "assistant", content: [{ type: "text", text: "Calling" }, { type: "tool-call", toolCallId: "call-a", toolName: "weather", input: { city: "Paris" } }, { type: "tool-call", toolCallId: "call-b", toolName: "time", input: { zone: "UTC" } }] },
+        { role: "tool", content: [{ type: "tool-result", toolCallId: "call-a", toolName: "weather", output: { type: "text", value: "sunny" } }, { type: "tool-result", toolCallId: "call-b", toolName: "time", output: { type: "json", value: { hour: 12 } } }] },
+      ],
+      tools: undefined,
+      toolChoice: undefined,
+    }));
+    expect(request).toEqual({
+      model: "gpt-5.6-terra",
+      messages: [
+        { role: "assistant", content: "Calling", toolCalls: [{ id: "call-a", name: "weather", arguments: { city: "Paris" } }, { id: "call-b", name: "time", arguments: { zone: "UTC" } }] },
+        { role: "tool", content: "sunny", name: "weather", toolCallId: "call-a" },
+        { role: "tool", content: "{\"hour\":12}", name: "time", toolCallId: "call-b" },
+      ],
+      options: { temperature: 0.5, maxOutputTokens: 9, stopSequences: ["END"] },
+    });
+  });
+
   test("rejects unsupported inputs before adapter call and preserves adapter errors", async () => {
     let calls = 0;
     const raw = new Error("adapter failed");
     const model = createGheLanguageModel({ complete: async (): Promise<NormalizedResponse> => { calls += 1; throw raw; }, stream: (): AsyncIterable<NormalizedStreamEvent> => empty() }, "model");
     await expect(model.doGenerate(call({ prompt: [{ role: "user", content: [{ type: "file" }] }] }))).rejects.toBeInstanceOf(GheLanguageModelBridgeError);
     await expect(model.doGenerate(call({ tools: [{ type: "provider-defined" }] }))).rejects.toBeInstanceOf(GheLanguageModelBridgeError);
-    await expect(model.doGenerate(call({ prompt: [{ role: "assistant", content: [{ type: "tool-call" }] }] }))).rejects.toBeInstanceOf(GheLanguageModelBridgeError);
+    await expect(model.doGenerate(call({ prompt: [{ role: "tool", content: [{ type: "tool-result", toolCallId: "call", toolName: "tool", output: { type: "content", value: [{ type: "image" }] } }] }] }))).rejects.toBeInstanceOf(GheLanguageModelBridgeError);
+    await expect(model.doGenerate(call({ prompt: [{ role: "assistant", content: [{ type: "tool-call" }] }] }))).rejects.toBe(raw);
     const controller = new AbortController(); controller.abort();
     await expect(model.doGenerate(call({ abortSignal: controller.signal }))).rejects.toThrow("aborted");
-    expect(calls).toBe(0);
-    await expect(model.doGenerate(call({ tools: undefined }))).rejects.toBe(raw);
+    expect(calls).toBe(1);
+    const adapterError: unknown = await model.doGenerate(call({ tools: undefined })).then(
+      (): never => { throw new Error("Expected adapter call to reject."); },
+      (error: unknown): unknown => error,
+    );
+    expect(calls).toBe(2);
+    expect(adapterError).toBe(raw);
   });
 
   test("forwards post-start caller cancellation to adapter", async () => {

@@ -36,6 +36,7 @@ describe("endpoint and request contract", () => {
     expect(DEFAULT_BASE_URL).toBe("https://ghe.example.test");
     expect(selectEndpoint("gpt-5.6-terra")).toBe("responses");
     expect(selectEndpoint("gpt-5.6-luna")).toBe("responses");
+    expect(selectEndpoint("gpt-5.4-mini")).toBe("responses");
     expect(selectEndpoint("other-model")).toBe("chat");
   });
 
@@ -49,6 +50,16 @@ describe("endpoint and request contract", () => {
         Accept: "application/json",
       },
       body: { model: "gpt-5.6-terra", input: FIXED_PROMPT, stream: false },
+      endpoint: "responses",
+    });
+  });
+
+  test("builds exact gpt-5.4-mini Responses request", () => {
+    expect(buildRequest(config({ model: "gpt-5.4-mini", stream: true }))).toEqual({
+      url: "https://ghe.example.test/responses",
+      method: "POST",
+      headers: { Authorization: "Bearer <redacted>", "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: { model: "gpt-5.4-mini", input: FIXED_PROMPT, stream: true },
       endpoint: "responses",
     });
   });

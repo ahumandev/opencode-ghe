@@ -12,9 +12,11 @@ import type {
   SharedV3ProviderMetadata,
   SharedV3Warning,
 } from "@ai-sdk/provider";
-import { HttpError } from "./ghe-protocol.ts";
+import { GHE_PROVIDER_ID } from "./catalog.ts";
+import { HttpError, InvalidRequestError } from "./ghe-protocol.ts";
 import type {
   FinishReason,
+  GheAssistantToolCall,
   GheMessage,
   GheProtocolAdapter,
   GheRequest,
@@ -40,7 +42,7 @@ export type GheLanguageModelAdapter = Pick<GheProtocolAdapter, "complete" | "str
 export function createGheLanguageModel(adapter: GheLanguageModelAdapter, modelId: string): LanguageModelV3 {
   return {
     specificationVersion: "v3",
-    provider: "ghe",
+    provider: GHE_PROVIDER_ID,
     modelId,
     supportedUrls: {},
     doGenerate: async (options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> => {
@@ -92,6 +94,11 @@ function mapRequest(options: LanguageModelV3CallOptions, modelId: string): Mappe
 function mapPrompt(options: LanguageModelV3CallOptions): GheMessage[] {
   const messages: GheMessage[] = [];
   for (const message of options.prompt) {
+    const runtimeMessage: unknown = message;
+    if (isDeveloperMessage(runtimeMessage)) {
+      messages.push({ role: "developer", content: runtimeMessage.content });
+      continue;
+    }
     if (message.role === "system") {
       messages.push({ role: "system", content: message.content });
       continue;
@@ -101,7 +108,7 @@ function mapPrompt(options: LanguageModelV3CallOptions): GheMessage[] {
       continue;
     }
     if (message.role === "assistant") {
-      messages.push({ role: "assistant", content: joinAssistantParts(message.content) });
+      messages.push(mapAssistantMessage(message.content));
       continue;
     }
     for (const part of message.content) {
@@ -128,21 +135,32 @@ function joinTextParts(parts: Extract<LanguageModelV3Message, { role: "user" }>[
   return content;
 }
 
-function joinAssistantParts(parts: Extract<LanguageModelV3Message, { role: "assistant" }>['content']): string {
+function isDeveloperMessage(message: unknown): message is { readonly role: "developer"; readonly content: string } {
+  if (typeof message !== "object" || message === null) return false;
+  const candidate = message as { readonly role?: unknown; readonly content?: unknown };
+  return candidate.role === "developer" && typeof candidate.content === "string";
+}
+
+function mapAssistantMessage(parts: Extract<LanguageModelV3Message, { role: "assistant" }>['content']): GheMessage {
   let content = "";
+  const toolCalls: GheAssistantToolCall[] = [];
   for (const part of parts) {
     if (part.type === "text" || part.type === "reasoning") {
       content += part.text;
       continue;
     }
-    throw unsupported("historical assistant tool calls, tool results, or files");
+    if (part.type === "tool-call") {
+      toolCalls.push({ id: part.toolCallId, name: part.toolName, arguments: part.input });
+      continue;
+    }
+    throw unsupported("historical assistant tool results or files");
   }
-  return content;
+  return { role: "assistant", content, ...(toolCalls.length === 0 ? {} : { toolCalls }) };
 }
 
 function toolResultContent(output: LanguageModelV3ToolResultOutput): string {
   if (output.type === "text" || output.type === "error-text") return output.value;
-  if (output.type === "json" || output.type === "error-json") return stringify(output.value);
+  if (output.type === "json" || output.type === "error-json") return serializeToolResultOutput(output.value);
   if (output.type === "content") {
     let content = "";
     for (const part of output.value) {
@@ -152,6 +170,17 @@ function toolResultContent(output: LanguageModelV3ToolResultOutput): string {
     return content;
   }
   throw unsupported("tool result execution denial");
+}
+
+function serializeToolResultOutput(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new InvalidRequestError("Invalid tool result output.");
+    return serialized;
+  } catch (error: unknown) {
+    if (error instanceof InvalidRequestError) throw error;
+    throw new InvalidRequestError("Invalid tool result output.");
+  }
 }
 
 function mapTool(tool: NonNullable<LanguageModelV3CallOptions["tools"]>[number]): GheTool {
@@ -381,6 +410,7 @@ function unsupported(feature: string): GheLanguageModelBridgeError {
 }
 
 function bridgeHttpError(error: unknown): unknown {
+  if (error instanceof GheLanguageModelBridgeError) return error;
   if (!(error instanceof HttpError)) return error;
   const evidence: string[] = ["HTTP_ERROR", `status ${error.status}`, `request ${error.requestId}`];
   if (error.contentType !== undefined) evidence.push(`content-type ${error.contentType}`);

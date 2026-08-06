@@ -51,6 +51,9 @@ export class StreamTerminationError extends GheProtocolError {
 export class UnsupportedOptionError extends GheProtocolError {
   constructor(option: string) { super("UNSUPPORTED_OPTION", `Unsupported request option: ${option}.`); this.name = "UnsupportedOptionError"; }
 }
+export class InvalidRequestError extends GheProtocolError {
+  constructor(message: string) { super("INVALID_REQUEST", message); this.name = "InvalidRequestError"; }
+}
 
 function details(requestId?: string, status?: number): { requestId?: string; status?: number } {
   return { ...(requestId === undefined ? {} : { requestId }), ...(status === undefined ? {} : { status }) };

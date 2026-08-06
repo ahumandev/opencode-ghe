@@ -5,7 +5,7 @@ export const BUILT_IN_MODEL_PROFILES: Readonly<Record<string, GheModelProfile>> 
   "claude-sonnet-5": Object.freeze({ id: "claude-sonnet-5", wireModel: "claude-sonnet-5", endpoint: "chat", reasoningBudget: 16000 }),
   "claude-opus-4.8": Object.freeze({ id: "claude-opus-4.8", wireModel: "claude-opus-4.8", endpoint: "chat", reasoningBudget: 16000 }),
   "gpt-5-mini": Object.freeze({ id: "gpt-5-mini", wireModel: "gpt-5-mini", endpoint: "chat", reasoningBudget: 16000 }),
-  "gpt-5.4-mini": Object.freeze({ id: "gpt-5.4-mini", wireModel: "gpt-5.4-mini", endpoint: "chat", reasoningBudget: 16000 }),
+  "gpt-5.4-mini": Object.freeze({ id: "gpt-5.4-mini", wireModel: "gpt-5.4-mini", endpoint: "responses", systemRole: "system" }),
   "gpt-5.6-terra": Object.freeze({ id: "gpt-5.6-terra", wireModel: "gpt-5.6-terra", endpoint: "responses", systemRole: "system" }),
   "gpt-5.6-luna": Object.freeze({ id: "gpt-5.6-luna", wireModel: "gpt-5.6-luna", endpoint: "responses", systemRole: "system" }),
 });

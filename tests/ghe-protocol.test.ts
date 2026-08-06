@@ -3,6 +3,7 @@ import {
   AuthenticationError,
   ConfigurationError,
   HttpError,
+  InvalidRequestError,
   MalformedResponseError,
   NetworkError,
   StreamTerminationError,
@@ -96,7 +97,7 @@ describe("GHE public protocol seam", () => {
       ["claude-sonnet-5", "claude-sonnet-5", "chat", "assistant"],
       ["claude-opus-4.8", "claude-opus-4.8", "chat", "assistant"],
       ["gpt-5-mini", "gpt-5-mini", "chat", "assistant"],
-      ["gpt-5.4-mini", "gpt-5.4-mini", "chat", "assistant"],
+       ["gpt-5.4-mini", "gpt-5.4-mini", "responses", "system"],
       ["gpt-5.6-terra", "gpt-5.6-terra", "responses", "system"],
       ["gpt-5.6-luna", "gpt-5.6-luna", "responses", "system"],
     ] as const;
@@ -191,7 +192,7 @@ describe("GHE public protocol seam", () => {
     });
     const responseCalls: CapturedRequest[] = [];
     await adapter(capture(json({ status: "completed", output: [{ type: "message", content: "ok" }] }), responseCalls)).complete({ ...chatRequest, model: RESPONSES_MODEL, options: { temperature: 0, maxOutputTokens: 1, stopSequences: [] } });
-    expect(body(responseCalls[0] as CapturedRequest)).toMatchObject({ model: "gpt-5.6-terra", input: [{ role: "system", content: "Rules" }, { role: "user", content: "Hello" }, { role: "tool", content: "sunny", name: "weather", tool_call_id: "call-1" }], stream: false, temperature: 0, max_output_tokens: 1, stop: [], tools, tool_choice: chatRequest.toolChoice });
+    expect(body(responseCalls[0] as CapturedRequest)).toEqual({ model: "gpt-5.6-terra", input: [{ role: "system", content: [{ type: "input_text", text: "Rules" }] }, { role: "user", content: [{ type: "input_text", text: "Hello" }] }, { type: "function_call_output", call_id: "call-1", output: [{ type: "input_text", text: "sunny" }] }], stream: false, max_output_tokens: 1, tools: [{ type: "function", name: "weather", description: "Forecast", parameters: { type: "object" } }], tool_choice: { type: "function", name: "weather" } });
     expect(body(responseCalls[0] as CapturedRequest).thinking).toBeUndefined();
     const configuredResponseCalls: CapturedRequest[] = [];
     await adapter(capture(json({ status: "completed", output: [{ type: "message", content: "ok" }] }), configuredResponseCalls), {
@@ -199,6 +200,88 @@ describe("GHE public protocol seam", () => {
       modelProfiles: { custom: { id: "custom", wireModel: "custom", endpoint: "responses", systemRole: "assistant" } },
     }).complete({ ...chatRequest, model: "custom" });
     expect((body(configuredResponseCalls[0] as CapturedRequest).input as { role: string }[])[0]?.role).toBe("assistant");
+  });
+
+  test("serializes gpt-5.4-mini Responses body exactly", async () => {
+    const calls: CapturedRequest[] = [];
+    await adapter(capture(json({ status: "completed", output: [{ type: "message", content: "ok" }] }), calls)).complete({
+      ...request("gpt-5.4-mini"),
+      options: { temperature: 0, maxOutputTokens: 7, stopSequences: ["END"] },
+    });
+    expect(calls[0]).toMatchObject({ url: `${BASE_URL}/responses` });
+    expect(body(calls[0] as CapturedRequest)).toEqual({
+      model: "gpt-5.4-mini",
+      input: [{ role: "system", content: [{ type: "input_text", text: "Rules" }] }, { role: "user", content: [{ type: "input_text", text: "Hello" }] }],
+      stream: false,
+      max_output_tokens: 7,
+    });
+  });
+
+  test("serializes Luna and Terra Responses tools, calls, outputs, choices, and stream flags", async () => {
+    const requestWithCalls: GheRequest = {
+      model: RESPONSES_MODEL,
+      messages: [
+        { role: "system", content: "Rules" },
+        { role: "assistant", content: "First", toolCalls: [{ id: "call-a", name: "weather", arguments: { city: "Paris" } }, { id: "call-b", name: "time", arguments: "{\"zone\":\"UTC\"}" }] },
+        { role: "tool", content: "sunny", name: "weather", toolCallId: "call-a" },
+        { role: "tool", content: "noon", name: "time", toolCallId: "call-b" },
+      ],
+      tools: [{ type: "function", function: { name: "weather", description: "Forecast", parameters: { type: "object" } } }],
+    };
+    for (const [model, choice, streamEnabled] of [["gpt-5.6-terra", "auto", false], ["gpt-5.6-luna", "none", true], ["gpt-5.6-terra", "required", false], ["gpt-5.6-luna", { type: "function", function: { name: "weather" } }, true]] as const) {
+      const calls: CapturedRequest[] = [];
+      const protocol = adapter(capture(streamEnabled ? stream(encoded("event: response.completed\ndata: {\"response\":{}}")) : json({ status: "completed", output: [{ type: "message", content: "ok" }] }), calls));
+      if (streamEnabled) await events(protocol.stream({ ...requestWithCalls, model, toolChoice: choice }));
+      else await protocol.complete({ ...requestWithCalls, model, toolChoice: choice });
+      expect(body(calls[0] as CapturedRequest)).toEqual({
+        model,
+        input: [
+          { role: "system", content: [{ type: "input_text", text: "Rules" }] },
+          { role: "assistant", content: [{ type: "input_text", text: "First" }] },
+          { type: "function_call", call_id: "call-a", name: "weather", arguments: "{\"city\":\"Paris\"}" },
+          { type: "function_call", call_id: "call-b", name: "time", arguments: "{\"zone\":\"UTC\"}" },
+          { type: "function_call_output", call_id: "call-a", output: [{ type: "input_text", text: "sunny" }] },
+          { type: "function_call_output", call_id: "call-b", output: [{ type: "input_text", text: "noon" }] },
+        ],
+        stream: streamEnabled,
+        tools: [{ type: "function", name: "weather", description: "Forecast", parameters: { type: "object" } }],
+        tool_choice: choice === "auto" || choice === "none" || choice === "required" ? choice : { type: "function", name: "weather" },
+      });
+    }
+  });
+
+  test("rejects invalid Responses data before credential resolution or fetch", async () => {
+    let resolved = 0;
+    let fetched = 0;
+    const protocol = adapter((async (): Promise<Response> => { fetched += 1; return json({}); }) as typeof fetch, {
+      credentialResolver: { resolve: (): string => { resolved += 1; return SECRET; } },
+    });
+    const invalidRequests: GheRequest[] = [
+      { ...request(RESPONSES_MODEL), messages: [{ role: "assistant", content: "", toolCalls: [{ id: " ", name: "weather", arguments: {} }] }] },
+      { ...request(RESPONSES_MODEL), messages: [{ role: "assistant", content: "", toolCalls: [{ id: "call", name: " ", arguments: {} }] }] },
+      { ...request(RESPONSES_MODEL), messages: [{ role: "tool", content: "result", toolCallId: " " }] },
+      { ...request(RESPONSES_MODEL), messages: [{ role: "tool", content: 1, toolCallId: "call" } as unknown as GheRequest["messages"][number]] },
+      { ...request(RESPONSES_MODEL), messages: [{ role: "assistant", content: "", toolCalls: [{ id: "call", name: "weather", arguments: "not-json" }] }] },
+      { ...request(RESPONSES_MODEL), toolChoice: { type: "function", function: { name: " " } } },
+      { ...request(RESPONSES_MODEL), toolChoice: { type: "invalid" } },
+      { ...request(RESPONSES_MODEL), tools: [{ type: "provider" } as unknown as NonNullable<GheRequest["tools"]>[number]] },
+    ];
+    for (const invalidRequest of invalidRequests) await expect(protocol.complete(invalidRequest)).rejects.toBeInstanceOf(InvalidRequestError);
+    expect({ resolved, fetched }).toEqual({ resolved: 0, fetched: 0 });
+  });
+
+  test("keeps gpt-5-mini Chat request and SSE contract unchanged", async () => {
+    const calls: CapturedRequest[] = [];
+    const protocol = adapter(capture(stream(encoded("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")), calls));
+    await events(protocol.stream({ ...request("gpt-5-mini"), options: { temperature: 1, maxOutputTokens: 8, stopSequences: ["END"] } }));
+    expect(calls[0]).toEqual({
+      url: `${BASE_URL}/chat/completions`,
+      init: expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: `Bearer ${SECRET}`, "x-request-id": REQUEST_ID, "content-type": "application/json" }),
+        body: JSON.stringify({ model: "gpt-5-mini", messages: [{ role: "assistant", content: "Rules" }, { role: "user", content: "Hello" }], stream: true, temperature: 1, max_tokens: 8, stop: ["END"], thinking: { type: "enabled", budget_tokens: 16000 } }),
+      }),
+    });
   });
 
   test("serializes supported option boundaries and calls fetch", async () => {
@@ -349,6 +432,42 @@ describe("GHE public protocol seam", () => {
       providerMessage: "Provider limit reached; [REDACTED]; [REDACTED]",
     });
     expect(error.message).toBe("HTTP request failed (status 429); request client-request-id; provider request provider-request-id; provider code rate_limit_exceeded; provider message Provider limit reached; [REDACTED]; [REDACTED].");
+  });
+
+  test("applies plain-text safety policy and token redaction to JSON provider messages", async () => {
+    const safe = await safeError(adapter(capture(new Response(JSON.stringify({
+      error: { message: `Retry later; "access_token":"${SECRET}"; "REFRESH_TOKEN"="${SENSITIVE}".` },
+    }), { status: 502, headers: { "Content-Type": "application/json" } }), [])).complete(request()));
+    expect(safe).toMatchObject({ providerMessage: "Retry later; [REDACTED]; [REDACTED]." });
+    expect(safe.message).toContain("provider message Retry later; [REDACTED]; [REDACTED].");
+
+    for (const unsafeMessage of [`<html>${SENSITIVE}</html>`, `control\u0001${SENSITIVE}`, `\u001B[31m${SENSITIVE}\u001B[0m`]) {
+      const error = await safeError(adapter(capture(new Response(JSON.stringify({ error: { message: unsafeMessage } }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      }), [])).complete(request()));
+      expect(error).not.toHaveProperty("providerMessage");
+      expect(error.message).toBe("HTTP request failed (status 502); request client-request-id.");
+      expect(error.message).not.toContain(unsafeMessage);
+    }
+  });
+
+  test("retains bounded redacted plain-text diagnostics and suppresses HTML and binary bodies", async () => {
+    const plain = await safeError(adapter(capture(new Response(`  Retry\n\t later; Bearer ${SECRET}; token: ${SENSITIVE}.  `, {
+      status: 502,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }), [])).complete(request()));
+    expect(plain).toMatchObject({ contentType: "text/plain", providerMessage: "Retry later; [REDACTED]; [REDACTED]" });
+    expect(plain.message).toContain("provider message Retry later; [REDACTED]; [REDACTED]");
+    const oversized = "x".repeat(8193);
+    for (const response of [
+      new Response(`<html>${SECRET}</html>`, { status: 500, headers: { "Content-Type": "text/html" } }),
+      new Response(new Uint8Array([0, 255, 1]), { status: 500, headers: { "Content-Type": "application/octet-stream" } }),
+      new Response(oversized, { status: 500, headers: { "Content-Type": "text/plain" } }),
+    ]) {
+      const error = await safeError(adapter(capture(response, [])).complete(request()));
+      expect(error).not.toHaveProperty("providerMessage");
+    }
   });
 
   test("redacts complete Authorization bearer values in HTTP diagnostics", async () => {
