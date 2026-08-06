@@ -98,7 +98,7 @@ The plugin tuple is `["file:///home/me/experimental/opencode-ghe/dist/plugin.js"
 | Option         | Required | Meaning                                                                        |
 | -------------- | -------- | ------------------------------------------------------------------------------ |
 | `baseUrl`    | Yes      | Absolute Copilot API base URL. Plugin appends request path; do not use`/v1`. |
-| `credential` | No       | Advanced explicit `env` token or `github-oauth` credential reference.       |
+| `credential` | No       | Advanced explicit`env` token or `github-oauth` credential reference.       |
 | `headers`    | No       | Additional allowed request headers.                                            |
 | `profiles`   | No       | Optional model profile overrides.                                              |
 | `timeoutMs`  | No       | Request timeout in milliseconds.                                               |
@@ -108,17 +108,19 @@ Unknown option fields are rejected. Native auth credentials are OpenCode-managed
 
 ## Models and capabilities
 
+OpenChamber shows provider **GitHub Enterprise**; Autocode configuration uses provider ID `ghe`. Configure tiers with canonical IDs, not UI labels. See [Autocode configuration](https://ahumandev.github.io/autocode/configuration).
+
 Use short OpenCode model IDs such as `ghe/claude-sonnet-5`. The catalog exposes these seven canonical models:
 
-| Model | Catalog ID | Mode and request path | Reasoning budget |
-| --- | --- | --- | --- |
-| `gpt-5-mini` | `ghe/gpt-5-mini` | chat — POST`<baseUrl>/chat/completions` | 16000 |
-| `gpt-5.4-mini` | `ghe/gpt-5.4-mini` | chat — POST`<baseUrl>/chat/completions` | 16000 |
-| `claude-haiku-4.5` | `ghe/claude-haiku-4.5` | chat — POST`<baseUrl>/chat/completions` | 16000 |
-| `claude-opus-4.8` | `ghe/claude-opus-4.8` | chat — POST`<baseUrl>/chat/completions` | 16000 |
-| `claude-sonnet-5` | `ghe/claude-sonnet-5` | chat — POST`<baseUrl>/chat/completions` | 16000 |
-| `gpt-5.6-terra` | `ghe/gpt-5.6-terra` | responses — POST`<baseUrl>/responses` | No built-in budget |
-| `gpt-5.6-luna` | `ghe/gpt-5.6-luna` | responses — POST`<baseUrl>/responses` | No built-in budget |
+| UI label         | Catalog ID               | Mode and request path                      | Reasoning budget   |
+| ---------------- | ------------------------ | ------------------------------------------ | ------------------ |
+| Claude Haiku 4.5 | `ghe/claude-haiku-4.5` | chat — POST`<baseUrl>/chat/completions` | 16000              |
+| Claude Sonnet 5  | `ghe/claude-sonnet-5`  | chat — POST`<baseUrl>/chat/completions` | 16000              |
+| Claude Opus 4.8  | `ghe/claude-opus-4.8`  | chat — POST`<baseUrl>/chat/completions` | 16000              |
+| GPT 5 Mini       | `ghe/gpt-5-mini`       | chat — POST`<baseUrl>/chat/completions` | 16000              |
+| GPT 5.4 Mini     | `ghe/gpt-5.4-mini`     | chat — POST`<baseUrl>/chat/completions` | 16000              |
+| GPT 5.6 Terra    | `ghe/gpt-5.6-terra`    | responses — POST`<baseUrl>/responses`   | No built-in budget |
+| GPT 5.6 Luna     | `ghe/gpt-5.6-luna`     | responses — POST`<baseUrl>/responses`   | No built-in budget |
 
 All seven models support text input, text output, and tools.
 

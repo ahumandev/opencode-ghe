@@ -18,6 +18,15 @@ const CANONICAL_MODEL_IDS: readonly string[] = [
 ];
 const CHAT_MODEL_IDS: readonly string[] = CANONICAL_MODEL_IDS.slice(0, 5);
 const RESPONSES_MODEL_IDS: readonly string[] = CANONICAL_MODEL_IDS.slice(5);
+const FRIENDLY_MODEL_LABELS: Readonly<Record<string, string>> = {
+  "gpt-5-mini": "GPT 5 Mini",
+  "gpt-5.4-mini": "GPT 5.4 Mini",
+  "claude-haiku-4.5": "Claude Haiku 4.5",
+  "claude-opus-4.8": "Claude Opus 4.8",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "gpt-5.6-terra": "GPT 5.6 Terra",
+  "gpt-5.6-luna": "GPT 5.6 Luna",
+};
 const BMW_LOGIN_COMMAND = 'opencode auth login --provider ghe --method "BMW Copilot device login"';
 
 export function readProjectText(relativePath: string): string {
@@ -54,12 +63,12 @@ export function configurationCodeBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/```(?:json|jsonc)\n([\s\S]*?)```/g)].map((match: RegExpMatchArray): string => match[1] ?? "");
 }
 
-export function modelTableRow(markdown: string, modelId: string): string {
-  const row: string | undefined = markdown.split("\n").find((line: string): boolean => line.startsWith(`| \`${modelId}\` |`));
+export function modelTableRow(markdown: string, modelId: string): string[] {
+  const row: string | undefined = markdown.split("\n").find((line: string): boolean => line.split("|")[2]?.trim() === `\`ghe/${modelId}\``);
   if (row === undefined) {
     throw new Error(`Missing model table row for ${modelId}`);
   }
-  return row;
+  return row.split("|").slice(1, -1).map((cell: string): string => cell.trim().replaceAll("`", ""));
 }
 
 const options = {
@@ -272,10 +281,20 @@ describe("published configuration contract", () => {
       "gpt-5.6-luna",
     ]);
     for (const modelId of CHAT_MODEL_IDS) {
-      expect(modelTableRow(readme, modelId)).toBe(`| \`${modelId}\` | \`ghe/${modelId}\` | chat — POST\`<baseUrl>/chat/completions\` | 16000 |`);
+      expect(modelTableRow(readme, modelId)).toEqual([
+        FRIENDLY_MODEL_LABELS[modelId],
+        `ghe/${modelId}`,
+        "chat — POST<baseUrl>/chat/completions",
+        "16000",
+      ]);
     }
     for (const modelId of RESPONSES_MODEL_IDS) {
-      expect(modelTableRow(readme, modelId)).toBe(`| \`${modelId}\` | \`ghe/${modelId}\` | responses — POST\`<baseUrl>/responses\` | No built-in budget |`);
+      expect(modelTableRow(readme, modelId)).toEqual([
+        FRIENDLY_MODEL_LABELS[modelId],
+        `ghe/${modelId}`,
+        "responses — POST<baseUrl>/responses",
+        "No built-in budget",
+      ]);
     }
     expect(readme).toContain("BMW LiteLLM reference also lists `gpt-5`, `gpt-5.4`, and `gpt-5.5`; plugin does not expose them because capabilities and routes are unverified.");
     expect(readme).toContain("Old `ghe/github_copilot/<model>` requests are compatibility-only, not catalog IDs.");

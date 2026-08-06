@@ -4,6 +4,16 @@ import type { GheModelProfile } from "./ghe-protocol/types.ts";
 export const GHE_PROVIDER_ID = "ghe";
 export const GHE_AI_SDK_PACKAGE = "opencode-ghe";
 
+const GHE_CATALOG_MODEL_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  "claude-haiku-4.5": "Claude Haiku 4.5",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-opus-4.8": "Claude Opus 4.8",
+  "gpt-5-mini": "GPT 5 Mini",
+  "gpt-5.4-mini": "GPT 5.4 Mini",
+  "gpt-5.6-terra": "GPT 5.6 Terra",
+  "gpt-5.6-luna": "GPT 5.6 Luna",
+});
+
 export interface GheCatalogApi {
   readonly type: "aisdk";
   readonly package: string;
@@ -51,7 +61,7 @@ export const GHE_CATALOG_METADATA: Readonly<{
 });
 
 export function getGheCatalogModelName(profileID: string): string {
-  return `GitHub Copilot ${profileID.split("/").at(-1)?.replaceAll("-", " ") ?? profileID}`;
+  return GHE_CATALOG_MODEL_NAMES[profileID] ?? "GitHub Copilot";
 }
 
 export async function registerGheCatalog(

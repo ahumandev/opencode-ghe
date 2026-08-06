@@ -12,6 +12,7 @@ import {
   GHE_AI_SDK_PACKAGE,
   GHE_CATALOG_METADATA,
   GHE_PROVIDER_ID,
+  getGheCatalogModelName,
   registerGheCatalog,
   type GheCatalogDraft,
   type GheCatalogModel,
@@ -135,6 +136,7 @@ type RootConfig = Parameters<NonNullable<Hooks["config"]>>[0];
 type GheRuntimeOptions = Record<string, unknown>;
 type GheRootModel = {
   id: string;
+  name: string;
   provider: { npm: string };
 };
 type GheRootProvider = {
@@ -162,7 +164,7 @@ function createLegacyModels(
   return Object.fromEntries(
     [...GHE_CATALOG_METADATA.profileIDs, ...Object.keys(configuredProfiles)].map((modelID): [string, GheRootModel] => [
       modelID,
-      { id: modelID, provider: { npm: import.meta.url } },
+      { id: modelID, name: getGheCatalogModelName(modelID), provider: { npm: import.meta.url } },
     ]),
   );
 }
