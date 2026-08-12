@@ -1,4 +1,4 @@
-import { ConfigurationError, UnsupportedOptionError } from "./errors.ts";
+import { ConfigurationError, InvalidRequestError, UnsupportedOptionError } from "./errors.ts";
 import { normalizeBuiltInModelID } from "./config.ts";
 import type { GheModelProfile, GheProtocolConfig, GheRequest } from "./types.ts";
 
@@ -35,7 +35,16 @@ export function validateRequest(request: GheRequest): void {
 
 export function buildBody(profile: GheModelProfile, request: GheRequest, stream: boolean, systemRole: "system" | "assistant" = "system"): Record<string, unknown> {
   const options = request.options;
-  const messages = request.messages.map((message) => ({ role: message.role === "system" ? systemRole : message.role, content: message.content, ...(message.name === undefined ? {} : { name: message.name }), ...(message.toolCallId === undefined ? {} : { tool_call_id: message.toolCallId }) }));
+  const messages = request.messages.map((message) => {
+    const toolCalls = serializeToolCalls(message.toolCalls);
+    return {
+      role: message.role === "system" ? systemRole : message.role,
+      content: message.role === "assistant" && message.content === "" && toolCalls !== undefined && toolCalls.length > 0 ? null : message.content,
+      ...(message.name === undefined ? {} : { name: message.name }),
+      ...(message.toolCallId === undefined ? {} : { tool_call_id: message.toolCallId }),
+      ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+    };
+  });
   const body: Record<string, unknown> = profile.endpoint === "chat"
     ? { model: profile.wireModel, messages, stream }
     : { model: profile.wireModel, input: messages, stream };
@@ -46,4 +55,48 @@ export function buildBody(profile: GheModelProfile, request: GheRequest, stream:
   if (request.toolChoice !== undefined) body.tool_choice = request.toolChoice;
   if (profile.endpoint === "chat" && profile.reasoningBudget !== undefined) body.thinking = { type: "enabled", budget_tokens: profile.reasoningBudget };
   return body;
+}
+
+function serializeToolCalls(toolCalls: unknown): { id: string; type: "function"; function: { name: string; arguments: string } }[] | undefined {
+  if (toolCalls === undefined) return undefined;
+  if (!Array.isArray(toolCalls)) throw invalid("assistant tool calls");
+  return toolCalls.map((toolCall) => {
+    if (typeof toolCall !== "object" || toolCall === null || Array.isArray(toolCall)) throw invalid("assistant tool call");
+    return {
+      id: requiredString(toolCall.id, "assistant tool call ID"),
+      type: "function",
+      function: {
+        name: requiredString(toolCall.name, "assistant tool call name"),
+        arguments: serializeArguments(toolCall.arguments),
+      },
+    };
+  });
+}
+
+function serializeArguments(argumentsValue: unknown): string {
+  if (typeof argumentsValue === "string") {
+    try {
+      JSON.parse(argumentsValue);
+      return argumentsValue;
+    } catch {
+      throw invalid("assistant tool call arguments");
+    }
+  }
+  try {
+    const serialized = JSON.stringify(argumentsValue);
+    if (serialized === undefined) throw invalid("assistant tool call arguments");
+    return serialized;
+  } catch (error: unknown) {
+    if (error instanceof InvalidRequestError) throw error;
+    throw invalid("assistant tool call arguments");
+  }
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) throw invalid(field);
+  return value;
+}
+
+function invalid(field: string): InvalidRequestError {
+  return new InvalidRequestError(`Invalid Chat request ${field}.`);
 }

@@ -1,6 +1,6 @@
 import { BUILT_IN_MODEL_PROFILES, normalizeBuiltInModelProfiles } from "./config.ts";
 import { resolveCredential } from "./credentials.ts";
-import { AuthenticationError, HttpError, InvalidRequestError, MalformedResponseError, NetworkError } from "./errors.ts";
+import { AuthenticationError, HttpError, MalformedResponseError, NetworkError } from "./errors.ts";
 import { normalizeResponse } from "./normalize.ts";
 import { buildBody, selectProfile, validateConfig, validateRequest } from "./request.ts";
 import { buildResponsesBody } from "./responses-request.ts";
@@ -52,9 +52,6 @@ interface PreparedRequest {
 async function prepare(config: GheProtocolConfig, fetcher: typeof fetch, request: GheRequest, stream: boolean, abortSignal: AbortSignal | undefined): Promise<PreparedRequest> {
   validateRequest(request);
   const profile = selectProfile(config, request.model);
-  if (profile.endpoint === "chat" && request.messages.some((message) => message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0)) {
-    throw new InvalidRequestError("Chat requests do not support assistant tool calls.");
-  }
   const requestId = config.requestIdFactory?.() || crypto.randomUUID();
   const body = profile.endpoint === "responses"
     ? buildResponsesBody(profile, request, stream, profile.systemRole ?? config.systemRole ?? "assistant")

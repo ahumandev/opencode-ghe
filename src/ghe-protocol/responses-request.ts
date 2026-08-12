@@ -5,11 +5,16 @@ type ResponsesInputItem = ResponsesMessageItem | ResponsesFunctionCallItem | Res
 
 interface ResponsesMessageItem {
   readonly role: "system" | "developer" | "user" | "assistant";
-  readonly content: readonly ResponsesTextPart[];
+  readonly content: readonly (ResponsesInputTextPart | ResponsesOutputTextPart)[];
 }
 
-interface ResponsesTextPart {
+interface ResponsesInputTextPart {
   readonly type: "input_text";
+  readonly text: string;
+}
+
+interface ResponsesOutputTextPart {
+  readonly type: "output_text";
   readonly text: string;
 }
 
@@ -23,7 +28,7 @@ interface ResponsesFunctionCallItem {
 interface ResponsesFunctionCallOutputItem {
   readonly type: "function_call_output";
   readonly call_id: string;
-  readonly output: readonly ResponsesTextPart[];
+  readonly output: readonly ResponsesInputTextPart[];
 }
 
 export function buildResponsesBody(profile: GheModelProfile, request: GheRequest, stream: boolean, systemRole: SystemRoleMode): Record<string, unknown> {
@@ -47,10 +52,16 @@ function addMessageItems(input: ResponsesInputItem[], message: GheMessage, syste
     return;
   }
   const role = message.role === "system" ? systemRole : message.role;
-  input.push({ role, content: [{ type: "input_text", text: message.content }] });
-  if (message.role !== "assistant") return;
-  if (message.toolCalls === undefined) return;
+  if (message.role !== "assistant") {
+    input.push({ role, content: [{ type: "input_text", text: message.content }] });
+    return;
+  }
+  if (message.toolCalls === undefined) {
+    input.push({ role, content: [{ type: "output_text", text: message.content }] });
+    return;
+  }
   if (!Array.isArray(message.toolCalls)) throw invalid("assistant tool calls");
+  if (message.content !== "" || message.toolCalls.length === 0) input.push({ role, content: [{ type: "output_text", text: message.content }] });
   for (const toolCall of message.toolCalls) {
     if (!isRecord(toolCall)) throw invalid("assistant tool call");
     input.push({

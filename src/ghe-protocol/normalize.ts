@@ -93,15 +93,82 @@ export function normalizeChatEvent(payload: JsonObject, toolIds: Map<number, str
   if (choice.finish_reason !== undefined) events.push({ type: "finish", finishReason: finish(choice.finish_reason) });
   return [...events, ...usageEvent(payload)];
 }
-export function normalizeResponsesEvent(type: string, payload: JsonObject): readonly NormalizedStreamEvent[] {
+interface ResponsesStreamToolCall {
+  readonly arguments: string;
+  readonly emittedArguments: string;
+  readonly finalizedArguments?: string;
+  readonly id?: string;
+  readonly name?: string;
+}
+
+export function normalizeResponsesEvent(type: string, payload: JsonObject, toolCalls: Map<string, ResponsesStreamToolCall>, completedToolCalls: { value: boolean }): readonly NormalizedStreamEvent[] {
   const events: NormalizedStreamEvent[] = [];
   const delta = text(payload.delta);
   if (type.includes("output_text") && delta) events.push({ type: "text-delta", text: delta });
   if (type.includes("reasoning") && delta) events.push({ type: "reasoning-delta", reasoning: delta });
-  if (type.includes("function_call_arguments") && delta) events.push({ type: "tool-call-delta", id: asString(payload.item_id) ?? asString(payload.call_id) ?? "", arguments: delta });
-  if (type.includes("function_call") && (type.endsWith("done") || type.endsWith("completed"))) events.push({ type: "tool-call", toolCall: toolCall(payload.item ?? payload) });
-  if (type.endsWith("completed")) events.push({ type: "finish", finishReason: "stop" });
+  if (type === "response.output_item.added") storeResponsesToolCall(payload, toolCalls, events);
+  if (type === "response.function_call_arguments.delta") emitResponsesToolCallDelta(payload, delta, toolCalls, events);
+  if (type === "response.function_call_arguments.done") storeResponsesToolCallArguments(payload, toolCalls);
+  if (type === "response.output_item.done" && emitResponsesToolCall(payload, toolCalls, events)) completedToolCalls.value = true;
+  if (type.endsWith("completed")) events.push({ type: "finish", finishReason: completedToolCalls.value ? "tool-calls" : "stop" });
   if (type.endsWith("failed")) events.push({ type: "finish", finishReason: "error" });
   return [...events, ...usageEvent(asObject(payload.response) ?? payload)];
 }
+function storeResponsesToolCall(payload: JsonObject, toolCalls: Map<string, ResponsesStreamToolCall>, events: NormalizedStreamEvent[]): void {
+  const item = asObject(payload.item);
+  if (item?.type !== "function_call") return;
+  const key = responsesToolCallKey(payload, item);
+  if (key === undefined) return;
+  const previous = toolCalls.get(key);
+  const id = nonEmptyString(item.call_id) ?? previous?.id;
+  const name = nonEmptyString(item.name) ?? previous?.name;
+  const argumentsValue = previous?.arguments ?? asString(item.arguments) ?? "";
+  const emittedArguments = previous?.emittedArguments ?? "";
+  const call = { ...previous, arguments: argumentsValue, emittedArguments, ...(id === undefined ? {} : { id }), ...(name === undefined ? {} : { name }) };
+  toolCalls.set(key, call);
+  const unEmittedArguments = call.arguments.slice(call.emittedArguments.length);
+  if (call.id !== undefined && call.name !== undefined && unEmittedArguments) {
+    events.push({ type: "tool-call-delta", id: call.id, name: call.name, arguments: unEmittedArguments });
+    toolCalls.set(key, { ...call, emittedArguments: call.arguments });
+  }
+}
+function emitResponsesToolCallDelta(payload: JsonObject, delta: string, toolCalls: Map<string, ResponsesStreamToolCall>, events: NormalizedStreamEvent[]): void {
+  const key = responsesToolCallKey(payload);
+  if (key === undefined) return;
+  const previous = toolCalls.get(key) ?? { arguments: "", emittedArguments: "" };
+  const call = { ...previous, arguments: previous.arguments + delta };
+  if (call.id !== undefined && call.name !== undefined && delta) {
+    events.push({ type: "tool-call-delta", id: call.id, name: call.name, arguments: delta });
+    toolCalls.set(key, { ...call, emittedArguments: previous.emittedArguments + delta });
+    return;
+  }
+  toolCalls.set(key, call);
+}
+function storeResponsesToolCallArguments(payload: JsonObject, toolCalls: Map<string, ResponsesStreamToolCall>): void {
+  const key = responsesToolCallKey(payload);
+  if (key === undefined) return;
+  const previous = toolCalls.get(key) ?? { arguments: "", emittedArguments: "" };
+  const argumentsValue = asString(payload.arguments);
+  if (argumentsValue !== undefined) toolCalls.set(key, { ...previous, arguments: argumentsValue, finalizedArguments: argumentsValue });
+}
+function emitResponsesToolCall(payload: JsonObject, toolCalls: Map<string, ResponsesStreamToolCall>, events: NormalizedStreamEvent[]): boolean {
+  const item = asObject(payload.item);
+  if (item?.type !== "function_call") return false;
+  const key = responsesToolCallKey(payload, item);
+  const previous = key === undefined ? undefined : toolCalls.get(key);
+  const id = nonEmptyString(item.call_id) ?? previous?.id;
+  const name = nonEmptyString(item.name) ?? previous?.name;
+  if (id === undefined || name === undefined) return false;
+  const rawArguments = previous?.finalizedArguments ?? asString(item.arguments) ?? previous?.arguments ?? "";
+  if (key !== undefined) toolCalls.set(key, { ...previous, arguments: rawArguments, emittedArguments: previous?.emittedArguments ?? "", id, name });
+  events.push({ type: "tool-call", toolCall: { id, name, arguments: argumentsValue(rawArguments) } });
+  return true;
+}
+function responsesToolCallKey(payload: JsonObject, item?: JsonObject): string | undefined {
+  const outputIndex = numberValue(payload.output_index);
+  if (outputIndex !== undefined) return `output-index:${outputIndex}`;
+  const itemId = asString(item?.id) ?? asString(payload.item_id);
+  return itemId === undefined ? undefined : `item-id:${itemId}`;
+}
+function nonEmptyString(value: unknown): string | undefined { const result = asString(value); return result !== undefined && result.trim() !== "" ? result : undefined; }
 function usageEvent(payload: JsonObject): readonly NormalizedStreamEvent[] { const value = usage(payload.usage); return Object.keys(value).length === 0 ? [] : [{ type: "usage", usage: value }]; }

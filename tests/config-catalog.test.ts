@@ -144,6 +144,7 @@ describe("GHE catalog", () => {
           models: expect.objectContaining({
             "claude-sonnet-5": {
               id: "claude-sonnet-5",
+              name: "Claude Sonnet 5",
               provider: { npm: new URL("../src/plugin.ts", import.meta.url).href },
             },
           }),
@@ -151,6 +152,16 @@ describe("GHE catalog", () => {
       },
     });
     expect(rootConfig).not.toHaveProperty("provider.ghe.models.claude-sonnet-5.provider.npm", "opencode-ghe");
+    expect(Object.keys((rootConfig.provider as { ghe: { models: Record<string, unknown> } }).ghe.models)).toEqual([
+      "claude-haiku-4.5",
+      "claude-sonnet-5",
+      "claude-opus-4.8",
+      "gpt-5-mini",
+      "gpt-5.4-mini",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "custom",
+    ]);
 
     const models: Array<[string, string, Record<string, unknown>]> = [];
     await registerGheCatalog({

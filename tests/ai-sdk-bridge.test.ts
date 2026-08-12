@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import { GheLanguageModelBridgeError, createGheLanguageModel } from "../src/ai-sdk-bridge.ts";
-import { HttpError } from "../src/ghe-protocol.ts";
-import type { GheRequest, NormalizedResponse, NormalizedStreamEvent } from "../src/ghe-protocol.ts";
+import { createGheProtocolAdapter, HttpError } from "../src/ghe-protocol.ts";
+import type { GheProtocolAdapter, GheRequest, NormalizedResponse, NormalizedStreamEvent } from "../src/ghe-protocol.ts";
 
 function call(overrides: Record<string, unknown> = {}): LanguageModelV3CallOptions {
   return {
@@ -28,6 +28,16 @@ async function parts(stream: ReadableStream<LanguageModelV3StreamPart>): Promise
     if (next.done) return result;
     result.push(next.value);
   }
+}
+
+function responsesAdapter(source: string): GheProtocolAdapter {
+  return createGheProtocolAdapter({
+    baseUrl: "https://ghe.example.test",
+    copilotHeaders: { "X-Copilot-Feature": "test" },
+    credential: "credential",
+    fetch: (async (): Promise<Response> => new Response(source, { status: 200, headers: { "Content-Type": "text/event-stream" } })) as typeof fetch,
+    requestIdFactory: (): string => "request",
+  });
 }
 
 describe("GHE AI SDK bridge", () => {
@@ -66,6 +76,102 @@ describe("GHE AI SDK bridge", () => {
       ],
       options: { temperature: 0.5, maxOutputTokens: 9, stopSequences: ["END"] },
     });
+  });
+
+  test("maps Responses SSE function call terminals to AI SDK tool-calls and text terminals to stop", async () => {
+    const functionCallSource = [
+      "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-1\",\"call_id\":\"call-1\",\"name\":\"weather\",\"arguments\":\"{}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const textSource = [
+      "event: response.output_text.delta\ndata: {\"delta\":\"Done\"}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const functionCallModel = createGheLanguageModel(responsesAdapter(functionCallSource), "gpt-5.6-terra");
+    const textModel = createGheLanguageModel(responsesAdapter(textSource), "gpt-5.6-terra");
+    const functionCallParts = await parts((await functionCallModel.doStream(call())).stream);
+    const textParts = await parts((await textModel.doStream(call())).stream);
+    expect(functionCallParts.filter((part): boolean => part.type === "finish")).toEqual([
+      { type: "finish", usage: { inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: undefined, text: undefined, reasoning: undefined } }, finishReason: { unified: "tool-calls", raw: "tool-calls" } },
+    ]);
+    expect(textParts.filter((part): boolean => part.type === "finish")).toEqual([
+      { type: "finish", usage: { inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: undefined, text: undefined, reasoning: undefined } }, finishReason: { unified: "stop", raw: "stop" } },
+    ]);
+  });
+
+  test("replays early Responses argument deltas as one complete tool input", async () => {
+    const argumentsJson = '{"task":"deploy","env":"production"}';
+    const earlyDeltas = [...argumentsJson].map((delta: string): string => `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ item_id: "item-early", delta })}\n\n`);
+    const source = [
+      ...earlyDeltas,
+      "event: response.output_item.added\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-early\",\"call_id\":\"call-early\",\"name\":\"deploy\",\"arguments\":\"\"}}\n\n",
+      `event: response.function_call_arguments.done\ndata: ${JSON.stringify({ item_id: "item-early", arguments: argumentsJson })}\n\n`,
+      "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-early\",\"call_id\":\"call-early\",\"name\":\"deploy\",\"arguments\":\"{}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const model = createGheLanguageModel(responsesAdapter(source), "gpt-5.6-terra");
+    const streamed = await parts((await model.doStream(call())).stream);
+    expect(earlyDeltas).toHaveLength(36);
+    const toolParts = streamed.filter((part): boolean => part.type.startsWith("tool-input") || part.type === "tool-call");
+    expect(toolParts).toEqual([
+      { type: "tool-input-start", id: "call-early", toolName: "deploy" },
+      { type: "tool-input-delta", id: "call-early", delta: argumentsJson },
+      { type: "tool-input-end", id: "call-early" },
+      { type: "tool-call", toolCallId: "call-early", toolName: "deploy", input: argumentsJson },
+    ]);
+    const terminal = toolParts.find((part): part is Extract<LanguageModelV3StreamPart, { type: "tool-call" }> => part.type === "tool-call");
+    expect(JSON.parse(terminal?.input ?? "")).toMatchObject({ task: "deploy" });
+  });
+
+  test("keeps Responses function calls separate from interleaved text output indexes", async () => {
+    const source = [
+      "event: response.output_text.delta\ndata: {\"output_index\":9,\"delta\":\"Working \"}\n\n",
+      "event: response.output_item.added\ndata: {\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"weather-item\",\"call_id\":\"call-weather\",\"name\":\"weather\",\"arguments\":\"\"}}\n\n",
+      "event: response.output_text.delta\ndata: {\"output_index\":9,\"delta\":\"now\"}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":2,\"item_id\":\"weather-item\",\"delta\":\"{\\\"city\\\":\\\"Paris\\\"}\"}\n\n",
+      "event: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"weather-item\",\"call_id\":\"call-weather\",\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const model = createGheLanguageModel(responsesAdapter(source), "gpt-5.6-terra");
+    const streamed = await parts((await model.doStream(call())).stream);
+    expect(streamed.filter((part): boolean => part.type === "text-delta")).toEqual([
+      { type: "text-delta", id: "text-0", delta: "Working " },
+      { type: "text-delta", id: "text-0", delta: "now" },
+    ]);
+    expect(streamed.filter((part): boolean => part.type.startsWith("tool-input") || part.type === "tool-call")).toEqual([
+      { type: "tool-input-start", id: "call-weather", toolName: "weather" },
+      { type: "tool-input-delta", id: "call-weather", delta: "{\"city\":\"Paris\"}" },
+      { type: "tool-input-end", id: "call-weather" },
+      { type: "tool-call", toolCallId: "call-weather", toolName: "weather", input: "{\"city\":\"Paris\"}" },
+    ]);
+    expect(streamed.find((part): boolean => part.type === "finish")).toMatchObject({ type: "finish", finishReason: { unified: "tool-calls", raw: "tool-calls" } });
+  });
+
+  test("bridges interleaved Responses function call indexes without cross-contaminating arguments", async () => {
+    const source = [
+      "event: response.output_item.added\ndata: {\"output_index\":5,\"item\":{\"type\":\"function_call\",\"id\":\"weather-item\",\"call_id\":\"call-weather\",\"name\":\"weather\",\"arguments\":\"\"}}\n\n",
+      "event: response.output_item.added\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"time-item\",\"call_id\":\"call-time\",\"name\":\"time\",\"arguments\":\"\"}}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":5,\"item_id\":\"weather-item\",\"delta\":\"{\\\"city\\\":\"}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":1,\"item_id\":\"time-item\",\"delta\":\"{\\\"zone\\\":\"}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":5,\"item_id\":\"weather-item\",\"delta\":\"\\\"Paris\\\"}\"}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":1,\"item_id\":\"time-item\",\"delta\":\"\\\"UTC\\\"}\"}\n\n",
+      "event: response.output_item.done\ndata: {\"output_index\":5,\"item\":{\"type\":\"function_call\",\"id\":\"weather-item\",\"call_id\":\"call-weather\",\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}\n\n",
+      "event: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"time-item\",\"call_id\":\"call-time\",\"name\":\"time\",\"arguments\":\"{\\\"zone\\\":\\\"UTC\\\"}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const model = createGheLanguageModel(responsesAdapter(source), "gpt-5.6-terra");
+    const streamed = await parts((await model.doStream(call())).stream);
+    expect(streamed.filter((part): boolean => part.type === "tool-call")).toEqual([
+      { type: "tool-call", toolCallId: "call-weather", toolName: "weather", input: "{\"city\":\"Paris\"}" },
+      { type: "tool-call", toolCallId: "call-time", toolName: "time", input: "{\"zone\":\"UTC\"}" },
+    ]);
+    expect(streamed.filter((part): boolean => part.type === "tool-input-delta")).toEqual([
+      { type: "tool-input-delta", id: "call-weather", delta: "{\"city\":" },
+      { type: "tool-input-delta", id: "call-time", delta: "{\"zone\":" },
+      { type: "tool-input-delta", id: "call-weather", delta: "\"Paris\"}" },
+      { type: "tool-input-delta", id: "call-time", delta: "\"UTC\"}" },
+    ]);
+    expect(streamed.find((part): boolean => part.type === "finish")).toMatchObject({ type: "finish", finishReason: { unified: "tool-calls", raw: "tool-calls" } });
   });
 
   test("rejects unsupported inputs before adapter call and preserves adapter errors", async () => {
@@ -143,15 +249,15 @@ describe("GHE AI SDK bridge", () => {
     await expect(unrelatedReader.read()).rejects.toBe(unrelated);
   });
 
-  test("streams ordered V3 parts, avoids duplicate final tool arguments, maps unknown finish, and errors", async () => {
+  test("streams ordered V3 parts, avoids duplicate terminal tool calls, maps unknown finish, and errors", async () => {
     const events: NormalizedStreamEvent[] = [
       { type: "text-delta", text: "Hi" }, { type: "reasoning-delta", reasoning: "Why" },
       { type: "tool-call-delta", id: "call", name: "lookup", arguments: '{"id":' }, { type: "tool-call-delta", id: "call", arguments: "2}" },
-      { type: "tool-call", toolCall: { id: "call", name: "lookup", arguments: { id: 2 } } }, { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } }, { type: "finish", finishReason: "unknown" },
+      { type: "tool-call", toolCall: { id: "call", name: "lookup", arguments: { id: 2 } } }, { type: "tool-call", toolCall: { id: "call", name: "lookup", arguments: { id: 2 } } }, { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } }, { type: "finish", finishReason: "unknown" },
     ];
     const model = createGheLanguageModel({ complete: async (): Promise<NormalizedResponse> => { throw new Error("unused"); }, stream: (): AsyncIterable<NormalizedStreamEvent> => iterator(events, (): void => undefined) }, "model");
     const streamed = await model.doStream(call({ tools: undefined }));
-    expect(await parts(streamed.stream)).toEqual([{ type: "stream-start", warnings: [{ type: "unsupported", feature: "topP" }, { type: "unsupported", feature: "topK" }, { type: "unsupported", feature: "presencePenalty" }, { type: "unsupported", feature: "frequencyPenalty" }, { type: "unsupported", feature: "seed" }, { type: "unsupported", feature: "providerOptions" }, { type: "unsupported", feature: "responseFormat" }, { type: "unsupported", feature: "headers", details: "Adapter owns request headers." }] }, { type: "text-start", id: "text-0" }, { type: "text-delta", id: "text-0", delta: "Hi" }, { type: "reasoning-start", id: "reasoning-0" }, { type: "reasoning-delta", id: "reasoning-0", delta: "Why" }, { type: "tool-input-start", id: "call", toolName: "lookup" }, { type: "tool-input-delta", id: "call", delta: '{"id":' }, { type: "tool-input-delta", id: "call", delta: "2}" }, { type: "tool-input-end", id: "call" }, { type: "text-end", id: "text-0" }, { type: "reasoning-end", id: "reasoning-0" }, { type: "finish", usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 2, text: undefined, reasoning: undefined } }, finishReason: { unified: "other", raw: "unknown" } }]);
+    expect(await parts(streamed.stream)).toEqual([{ type: "stream-start", warnings: [{ type: "unsupported", feature: "topP" }, { type: "unsupported", feature: "topK" }, { type: "unsupported", feature: "presencePenalty" }, { type: "unsupported", feature: "frequencyPenalty" }, { type: "unsupported", feature: "seed" }, { type: "unsupported", feature: "providerOptions" }, { type: "unsupported", feature: "responseFormat" }, { type: "unsupported", feature: "headers", details: "Adapter owns request headers." }] }, { type: "text-start", id: "text-0" }, { type: "text-delta", id: "text-0", delta: "Hi" }, { type: "reasoning-start", id: "reasoning-0" }, { type: "reasoning-delta", id: "reasoning-0", delta: "Why" }, { type: "tool-input-start", id: "call", toolName: "lookup" }, { type: "tool-input-delta", id: "call", delta: '{"id":' }, { type: "tool-input-delta", id: "call", delta: "2}" }, { type: "tool-input-end", id: "call" }, { type: "tool-call", toolCallId: "call", toolName: "lookup", input: '{"id":2}' }, { type: "text-end", id: "text-0" }, { type: "reasoning-end", id: "reasoning-0" }, { type: "finish", usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 2, text: undefined, reasoning: undefined } }, finishReason: { unified: "other", raw: "unknown" } }]);
     const failing = createGheLanguageModel({ complete: async (): Promise<NormalizedResponse> => { throw new Error("unused"); }, stream: (): AsyncIterable<NormalizedStreamEvent> => failingIterator() }, "model");
     const reader = (await failing.doStream(call({ tools: undefined }))).stream.getReader();
     await reader.read();

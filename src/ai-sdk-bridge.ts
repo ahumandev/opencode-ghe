@@ -343,8 +343,10 @@ async function pumpStream(iterator: AsyncIterator<NormalizedStreamEvent>, contro
         tool.name = event.toolCall.name;
         tools.set(tool.id, tool);
         startTool(tool, controller);
-        emitFinalToolArguments(tool, stringify(event.toolCall.arguments), controller);
+        const input: string = stringify(event.toolCall.arguments);
+        emitFinalToolArguments(tool, input, controller);
         endTool(tool, controller);
+        emitToolCall(tool, input, controller);
       } else if (event.type === "usage") {
         usage = event.usage;
       } else {
@@ -371,6 +373,7 @@ interface StreamTool {
   emitted: string;
   started?: boolean;
   ended: boolean;
+  called?: boolean;
 }
 
 function startTool(tool: StreamTool, controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>): void {
@@ -397,6 +400,12 @@ function endTool(tool: StreamTool, controller: ReadableStreamDefaultController<L
   if (tool.ended || !tool.started) return;
   controller.enqueue({ type: "tool-input-end", id: tool.id });
   tool.ended = true;
+}
+
+function emitToolCall(tool: StreamTool, input: string, controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>): void {
+  if (tool.called || tool.name === undefined) return;
+  controller.enqueue({ type: "tool-call", toolCallId: tool.id, toolName: tool.name, input });
+  tool.called = true;
 }
 
 function stringify(value: unknown): string {

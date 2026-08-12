@@ -40,17 +40,49 @@ test("loads external built plugin", async () => {
           credentialEnv: "GHE_TOKEN",
         },
         models: {
+          "claude-haiku-4.5": {
+            id: "claude-haiku-4.5",
+            name: "Claude Haiku 4.5",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
           "claude-sonnet-5": {
             id: "claude-sonnet-5",
+            name: "Claude Sonnet 5",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
+          "claude-opus-4.8": {
+            id: "claude-opus-4.8",
+            name: "Claude Opus 4.8",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
+          "gpt-5-mini": {
+            id: "gpt-5-mini",
+            name: "GPT 5 Mini",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
+          "gpt-5.4-mini": {
+            id: "gpt-5.4-mini",
+            name: "GPT 5.4 Mini",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
+          "gpt-5.6-terra": {
+            id: "gpt-5.6-terra",
+            name: "GPT 5.6 Terra",
+            provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
+          },
+          "gpt-5.6-luna": {
+            id: "gpt-5.6-luna",
+            name: "GPT 5.6 Luna",
             provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
           },
         },
       },
     },
   });
-  const model = (config.provider as { ghe: { models: Record<string, { id: string; provider: { npm: string } }> } }).ghe.models["claude-sonnet-5"];
+  const model = (config.provider as { ghe: { models: Record<string, { id: string; name: string; provider: { npm: string } }> } }).ghe.models["claude-sonnet-5"];
   expect(model).toEqual({
     id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
     provider: { npm: new URL("../dist/plugin.js", import.meta.url).href },
   });
   expect(model?.provider.npm).toStartWith("file:");

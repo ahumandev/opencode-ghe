@@ -237,7 +237,7 @@ describe("GHE public protocol seam", () => {
         model,
         input: [
           { role: "system", content: [{ type: "input_text", text: "Rules" }] },
-          { role: "assistant", content: [{ type: "input_text", text: "First" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "First" }] },
           { type: "function_call", call_id: "call-a", name: "weather", arguments: "{\"city\":\"Paris\"}" },
           { type: "function_call", call_id: "call-b", name: "time", arguments: "{\"zone\":\"UTC\"}" },
           { type: "function_call_output", call_id: "call-a", output: [{ type: "input_text", text: "sunny" }] },
@@ -248,6 +248,67 @@ describe("GHE public protocol seam", () => {
         tool_choice: choice === "auto" || choice === "none" || choice === "required" ? choice : { type: "function", name: "weather" },
       });
     }
+  });
+
+  test("preserves tool-only Chat and Responses history with matching result IDs", async () => {
+    const toolHistory: GheRequest["messages"] = [
+      { role: "user", content: "Check weather" },
+      { role: "assistant", content: "", toolCalls: [{ id: "call-weather", name: "weather", arguments: { city: "Paris" } }, { id: "call-time", name: "time", arguments: "{\"zone\":\"UTC\"}" }] },
+      { role: "tool", content: "sunny", toolCallId: "call-weather" },
+      { role: "tool", content: "noon", toolCallId: "call-time" },
+    ];
+    const chatCalls: CapturedRequest[] = [];
+    await adapter(capture(json({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), chatCalls)).complete({ model: CHAT_MODEL, messages: toolHistory });
+    expect(body(chatCalls[0] as CapturedRequest).messages).toEqual([
+      { role: "user", content: "Check weather" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call-weather", type: "function", function: { name: "weather", arguments: "{\"city\":\"Paris\"}" } }, { id: "call-time", type: "function", function: { name: "time", arguments: "{\"zone\":\"UTC\"}" } }] },
+      { role: "tool", content: "sunny", tool_call_id: "call-weather" },
+      { role: "tool", content: "noon", tool_call_id: "call-time" },
+    ]);
+    const responseCalls: CapturedRequest[] = [];
+    await adapter(capture(json({ status: "completed", output: [{ type: "message", content: "ok" }] }), responseCalls)).complete({ model: RESPONSES_MODEL, messages: toolHistory });
+    expect(body(responseCalls[0] as CapturedRequest).input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Check weather" }] },
+      { type: "function_call", call_id: "call-weather", name: "weather", arguments: "{\"city\":\"Paris\"}" },
+      { type: "function_call", call_id: "call-time", name: "time", arguments: "{\"zone\":\"UTC\"}" },
+      { type: "function_call_output", call_id: "call-weather", output: [{ type: "input_text", text: "sunny" }] },
+      { type: "function_call_output", call_id: "call-time", output: [{ type: "input_text", text: "noon" }] },
+    ]);
+  });
+
+  test("serializes Responses continuation history with assistant output text", async () => {
+    const calls: CapturedRequest[] = [];
+    await adapter(capture(json({ status: "completed", output: [{ type: "message", content: "ok" }] }), calls)).complete({
+      model: RESPONSES_MODEL,
+      messages: [
+        { role: "user", content: "Find weather" },
+        { role: "assistant", content: "Checking now.", toolCalls: [{ id: "call-weather", name: "weather", arguments: { city: "Paris" } }] },
+        { role: "tool", content: "Sunny", toolCallId: "call-weather" },
+        { role: "user", content: "What should I wear?" },
+      ],
+    });
+    expect(body(calls[0] as CapturedRequest).input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Find weather" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "Checking now." }] },
+      { type: "function_call", call_id: "call-weather", name: "weather", arguments: "{\"city\":\"Paris\"}" },
+      { type: "function_call_output", call_id: "call-weather", output: [{ type: "input_text", text: "Sunny" }] },
+      { role: "user", content: [{ type: "input_text", text: "What should I wear?" }] },
+    ]);
+  });
+
+  test("rejects malformed Chat assistant tool calls before HTTP", async () => {
+    let fetched = 0;
+    const protocol = adapter((async (): Promise<Response> => { fetched += 1; return json({}); }) as typeof fetch);
+    const malformed = [
+      { id: " ", name: "weather", arguments: {} },
+      { id: "call", name: " ", arguments: {} },
+      { id: "call", name: "weather", arguments: "not-json" },
+      { id: "call", name: "weather", arguments: undefined },
+    ];
+    for (const toolCall of malformed) {
+      await expect(protocol.complete({ model: CHAT_MODEL, messages: [{ role: "assistant", content: "", toolCalls: [toolCall] }] })).rejects.toBeInstanceOf(InvalidRequestError);
+    }
+    expect(fetched).toBe(0);
   });
 
   test("rejects invalid Responses data before credential resolution or fetch", async () => {
@@ -353,27 +414,90 @@ describe("GHE public protocol seam", () => {
       { type: "reasoning-delta", reasoning: "why" },
       { type: "tool-call-delta", id: "provider-call", name: "weather", arguments: "{\"city\":" },
       { type: "tool-call-delta", id: "provider-call", arguments: "Paris\"}" },
-      { type: "finish", finishReason: "tool-calls" },
+       { type: "finish", finishReason: "tool-calls" },
       { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } },
     ]);
   });
 
   test("maps responses SSE events and accepts response.completed without final newline", async () => {
     const source = [
-      "event: response.output_text.delta\ndata: {\"delta\":\"Hi\"}\n\n",
-      "event: response.reasoning.delta\ndata: {\"delta\":\"Think\"}\n\n",
-      "event: response.function_call_arguments.delta\ndata: {\"item_id\":\"call-3\",\"delta\":\"{}\"}\n\n",
-      "event: response.function_call.done\ndata: {\"item\":{\"call_id\":\"call-3\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n",
+       "event: response.output_text.delta\ndata: {\"delta\":\"Hi\"}\n\n",
+       "event: response.reasoning.delta\ndata: {\"delta\":\"Think\"}\n\n",
+       "event: response.output_item.added\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-3\",\"call_id\":\"call-3\",\"name\":\"lookup\",\"arguments\":\"\"}}\n\n",
+       "event: response.function_call_arguments.delta\ndata: {\"item_id\":\"item-3\",\"delta\":\"{}\"}\n\n",
+       "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-3\",\"call_id\":\"call-3\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n",
       "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}",
     ].join("");
     const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request(RESPONSES_MODEL)));
     expect(result).toEqual([
       { type: "text-delta", text: "Hi" },
       { type: "reasoning-delta", reasoning: "Think" },
-      { type: "tool-call-delta", id: "call-3", arguments: "{}" },
+      { type: "tool-call-delta", id: "call-3", name: "lookup", arguments: "{}" },
       { type: "tool-call", toolCall: { id: "call-3", name: "lookup", arguments: {} } },
-      { type: "finish", finishReason: "stop" },
+       { type: "finish", finishReason: "tool-calls" },
       { type: "usage", usage: { inputTokens: 2, outputTokens: 3 } },
+    ]);
+  });
+
+  test("waits for output item metadata before completing Responses function calls", async () => {
+    const source = [
+      "event: response.function_call_arguments.delta\ndata: {\"item_id\":\"item-4\",\"delta\":\"{\\\"city\\\":\\\"Paris\\\"}\"}\n\n",
+      "event: response.function_call_arguments.done\ndata: {\"item_id\":\"item-4\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}\n\n",
+      "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-4\",\"call_id\":\"call-weather\",\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request(RESPONSES_MODEL)));
+    expect(result).toEqual([
+      { type: "tool-call", toolCall: { id: "call-weather", name: "weather", arguments: { city: "Paris" } } },
+       { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("replays early Responses argument deltas after tool metadata arrives", async () => {
+    const argumentsJson = '{"task":"deploy","env":"production"}';
+    const earlyDeltas = [...argumentsJson].map((delta: string): string => `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ item_id: "item-early", delta })}\n\n`);
+    const source = [
+      ...earlyDeltas,
+      "event: response.output_item.added\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-early\",\"call_id\":\"call-early\",\"name\":\"deploy\",\"arguments\":\"\"}}\n\n",
+      `event: response.function_call_arguments.done\ndata: ${JSON.stringify({ item_id: "item-early", arguments: argumentsJson })}\n\n`,
+      "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-early\",\"call_id\":\"call-early\",\"name\":\"deploy\",\"arguments\":\"{}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request(RESPONSES_MODEL)));
+    expect(earlyDeltas).toHaveLength(36);
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "call-early", name: "deploy", arguments: argumentsJson },
+      { type: "tool-call", toolCall: { id: "call-early", name: "deploy", arguments: { task: "deploy", env: "production" } } },
+      { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("prefers finalized Responses arguments over terminal placeholder arguments", async () => {
+    const source = [
+      "event: response.function_call_arguments.done\ndata: {\"item_id\":\"item-5\",\"arguments\":\"{\\\"task\\\":\\\"deploy\\\",\\\"environment\\\":\\\"prod\\\"}\"}\n\n",
+      "event: response.output_item.done\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"item-5\",\"call_id\":\"call-task\",\"name\":\"run_task\",\"arguments\":\"{}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request(RESPONSES_MODEL)));
+    expect(result).toEqual([
+      { type: "tool-call", toolCall: { id: "call-task", name: "run_task", arguments: { task: "deploy", environment: "prod" } } },
+      { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("correlates Responses function calls by output index when event item IDs differ", async () => {
+    const source = [
+      "event: response.output_item.added\ndata: {\"output_index\":7,\"item\":{\"type\":\"function_call\",\"id\":\"added-item\",\"call_id\":\"call-task\",\"name\":\"run_task\",\"arguments\":\"\"}}\n\n",
+      "event: response.function_call_arguments.delta\ndata: {\"output_index\":7,\"item_id\":\"delta-item\",\"delta\":\"{\\\"task\\\":\"}\n\n",
+      "event: response.function_call_arguments.done\ndata: {\"output_index\":7,\"item_id\":\"done-item\",\"arguments\":\"{\\\"task\\\":\\\"deploy\\\",\\\"environment\\\":\\\"prod\\\"}\"}\n\n",
+      "event: response.output_item.done\ndata: {\"output_index\":7,\"item\":{\"type\":\"function_call\",\"id\":\"terminal-item\",\"call_id\":\"call-task\",\"name\":\"run_task\",\"arguments\":\"{}\"}}\n\n",
+      "event: response.completed\ndata: {\"response\":{}}",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request(RESPONSES_MODEL)));
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "call-task", name: "run_task", arguments: "{\"task\":" },
+      { type: "tool-call", toolCall: { id: "call-task", name: "run_task", arguments: { task: "deploy", environment: "prod" } } },
+      { type: "finish", finishReason: "tool-calls" },
     ]);
   });
 

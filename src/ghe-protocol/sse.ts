@@ -8,6 +8,8 @@ export async function* parseStream(body: ReadableStream<Uint8Array> | null, endp
   if (body === null) throw new MalformedResponseError(requestId);
   let completed = false;
   const toolIds = new Map<number, string>();
+  const responsesToolCalls = new Map<string, { readonly arguments: string; readonly emittedArguments: string; readonly id?: string; readonly name?: string }>();
+  const completedResponsesToolCalls = { value: false };
   try {
     for await (const event of parseSse(body)) {
       if (event.data === "[DONE]" && event.event === "") { completed = true; break; }
@@ -19,7 +21,7 @@ export async function* parseStream(body: ReadableStream<Uint8Array> | null, endp
       if (endpoint === "chat") {
         for (const normalized of normalizeChatEvent(payload, toolIds)) yield normalized;
       } else {
-        for (const normalized of normalizeResponsesEvent(type, payload)) yield normalized;
+        for (const normalized of normalizeResponsesEvent(type, payload, responsesToolCalls, completedResponsesToolCalls)) yield normalized;
         if (type === "response.completed") completed = true;
       }
     }
