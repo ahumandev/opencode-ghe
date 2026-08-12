@@ -40,6 +40,16 @@ function responsesAdapter(source: string): GheProtocolAdapter {
   });
 }
 
+function chatAdapter(source: string): GheProtocolAdapter {
+  return createGheProtocolAdapter({
+    baseUrl: "https://ghe.example.test",
+    copilotHeaders: { "X-Copilot-Feature": "test" },
+    credential: "credential",
+    fetch: (async (): Promise<Response> => new Response(source, { status: 200, headers: { "Content-Type": "text/event-stream" } })) as typeof fetch,
+    requestIdFactory: (): string => "request",
+  });
+}
+
 describe("GHE AI SDK bridge", () => {
   test("maps generate inputs and returns exact V3 content, metadata, usage, and warnings", async () => {
     let request: GheRequest | undefined;
@@ -121,6 +131,34 @@ describe("GHE AI SDK bridge", () => {
     ]);
     const terminal = toolParts.find((part): part is Extract<LanguageModelV3StreamPart, { type: "tool-call" }> => part.type === "tool-call");
     expect(JSON.parse(terminal?.input ?? "")).toMatchObject({ task: "deploy" });
+  });
+
+  test("bridges complete Chat tool input when Claude terminal metadata is empty", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"claude-call\",\"function\":{\"name\":\"schedule\",\"arguments\":\"{\\\"date\\\":\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"2026-08-12\\\"}\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const model = createGheLanguageModel(chatAdapter(source), "claude-sonnet-5");
+    const streamed = await parts((await model.doStream(call())).stream);
+    const terminal = streamed.find((part): part is Extract<LanguageModelV3StreamPart, { type: "tool-call" }> => part.type === "tool-call");
+    expect(terminal).toEqual({ type: "tool-call", toolCallId: "claude-call", toolName: "schedule", input: '{"date":"2026-08-12"}' });
+    expect(JSON.parse(terminal?.input ?? "")).toEqual({ date: "2026-08-12" });
+  });
+
+  test("bridges explicit empty Chat arguments once across repeated finishes", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"empty-call\",\"function\":{\"name\":\"empty\",\"arguments\":\"\"}},{\"index\":1,\"id\":\"object-call\",\"function\":{\"name\":\"object\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const model = createGheLanguageModel(chatAdapter(source), "claude-sonnet-5");
+    const streamed = await parts((await model.doStream(call())).stream);
+    expect(streamed.filter((part): boolean => part.type === "tool-call")).toEqual([
+      { type: "tool-call", toolCallId: "empty-call", toolName: "empty", input: "" },
+      { type: "tool-call", toolCallId: "object-call", toolName: "object", input: "{}" },
+    ]);
   });
 
   test("keeps Responses function calls separate from interleaved text output indexes", async () => {

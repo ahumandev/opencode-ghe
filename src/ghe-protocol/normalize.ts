@@ -71,7 +71,14 @@ function toolCall(value: unknown): NormalizedToolCall {
   return { id: asString(item.id) ?? asString(item.call_id) ?? "", name: asString(functionValue?.name) ?? asString(item.name) ?? "", arguments: argumentsValue(functionValue?.arguments ?? item.arguments) };
 }
 
-export function normalizeChatEvent(payload: JsonObject, toolIds: Map<number, string>): readonly NormalizedStreamEvent[] {
+interface ChatStreamToolCall {
+  readonly id: string;
+  readonly arguments: string;
+  readonly emitted: boolean;
+  readonly name?: string;
+}
+
+export function normalizeChatEvent(payload: JsonObject, toolCalls: Map<number, ChatStreamToolCall>): readonly NormalizedStreamEvent[] {
   const choice = asObject(asArray(payload.choices)[0]);
   if (choice === undefined) return usageEvent(payload);
   const delta = asObject(choice.delta) ?? {};
@@ -81,16 +88,28 @@ export function normalizeChatEvent(payload: JsonObject, toolIds: Map<number, str
   let fallbackIndex = 0;
   for (const call of asArray(delta.tool_calls)) {
     const item = asObject(call) ?? {}; const fn = asObject(item.function);
-    const args = asString(fn?.arguments) ?? "";
+    const argumentsFragment = asString(fn?.arguments);
+    const args = argumentsFragment ?? "";
     const index = typeof item.index === "number" && Number.isInteger(item.index) ? item.index : fallbackIndex;
     fallbackIndex += 1;
     const providerId = asString(item.id);
-    const id = toolIds.get(index) ?? providerId ?? `tool-call-${index}`;
-    toolIds.set(index, id);
+    const previous = toolCalls.get(index);
+    const id = previous?.id ?? providerId ?? `tool-call-${index}`;
     const name = asString(fn?.name);
-    events.push({ type: "tool-call-delta", id, ...(name === undefined ? {} : { name }), arguments: args });
+    const terminalPlaceholder = choice.finish_reason !== undefined && previous !== undefined && (argumentsFragment === undefined || (args === "{}" && previous.arguments !== ""));
+    const argumentsValue = terminalPlaceholder ? previous.arguments : (previous?.arguments ?? "") + args;
+    toolCalls.set(index, { id, arguments: argumentsValue, emitted: previous?.emitted ?? false, ...(name === undefined ? previous?.name === undefined ? {} : { name: previous.name } : { name }) });
+    if (!terminalPlaceholder) events.push({ type: "tool-call-delta", id, ...(name === undefined ? {} : { name }), arguments: args });
   }
-  if (choice.finish_reason !== undefined) events.push({ type: "finish", finishReason: finish(choice.finish_reason) });
+  if (choice.finish_reason !== undefined) {
+    for (const [index, call] of toolCalls) {
+      if (call.name !== undefined && !call.emitted) {
+        events.push({ type: "tool-call", toolCall: { id: call.id, name: call.name, arguments: argumentsValue(call.arguments) } });
+        toolCalls.set(index, { ...call, emitted: true });
+      }
+    }
+    events.push({ type: "finish", finishReason: finish(choice.finish_reason) });
+  }
   return [...events, ...usageEvent(payload)];
 }
 interface ResponsesStreamToolCall {

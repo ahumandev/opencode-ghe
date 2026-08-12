@@ -404,7 +404,7 @@ describe("GHE public protocol seam", () => {
   });
 
   test("parses fragmented chat SSE with CRLF, comments, multiline data, stable tool IDs, and DONE", async () => {
-    const source = ": keepalive\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"hé\"\r\ndata: },\"finish_reason\":null}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"reasoning\":\"why\",\"tool_calls\":[{\"index\":0,\"id\":\"provider-call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\r\n\r\ndata: [DONE]";
+    const source = ": keepalive\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"hé\"\r\ndata: },\"finish_reason\":null}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"reasoning\":\"why\",\"tool_calls\":[{\"index\":0,\"id\":\"provider-call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\r\n\r\ndata: [DONE]";
     const bytes = new TextEncoder().encode(source);
     const split = bytes.indexOf(0xc3) + 1;
     const result = await events(adapter(capture(stream([bytes.slice(0, split), bytes.slice(split)]), [])).stream(request()));
@@ -412,10 +412,74 @@ describe("GHE public protocol seam", () => {
       { type: "text-delta", text: "hé" },
       { type: "finish", finishReason: "unknown" },
       { type: "reasoning-delta", reasoning: "why" },
-      { type: "tool-call-delta", id: "provider-call", name: "weather", arguments: "{\"city\":" },
-      { type: "tool-call-delta", id: "provider-call", arguments: "Paris\"}" },
+       { type: "tool-call-delta", id: "provider-call", name: "weather", arguments: "{\"city\":" },
+       { type: "tool-call-delta", id: "provider-call", arguments: "\"Paris\"}" },
+       { type: "tool-call", toolCall: { id: "provider-call", name: "weather", arguments: { city: "Paris" } } },
        { type: "finish", finishReason: "tool-calls" },
-      { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } },
+       { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } },
+     ]);
+   });
+
+  test("retains Chat tool arguments when terminal metadata is empty", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"claude-call\",\"function\":{\"name\":\"schedule\",\"arguments\":\"{\\\"date\\\":\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"2026-08-12\\\"}\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request()));
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "claude-call", name: "schedule", arguments: "{\"date\":" },
+      { type: "tool-call-delta", id: "claude-call", arguments: "\"2026-08-12\"}" },
+      { type: "tool-call", toolCall: { id: "claude-call", name: "schedule", arguments: { date: "2026-08-12" } } },
+      { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("emits standalone terminal Chat empty-object arguments", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"claude-call\",\"function\":{\"name\":\"schedule\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request()));
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "claude-call", name: "schedule", arguments: "" },
+      { type: "tool-call-delta", id: "claude-call", arguments: "{}" },
+      { type: "tool-call", toolCall: { id: "claude-call", name: "schedule", arguments: {} } },
+      { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("normalizes explicit empty Chat arguments once across repeated finishes", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"empty-call\",\"function\":{\"name\":\"empty\",\"arguments\":\"\"}},{\"index\":1,\"id\":\"object-call\",\"function\":{\"name\":\"object\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request()));
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "empty-call", name: "empty", arguments: "" },
+      { type: "tool-call-delta", id: "object-call", name: "object", arguments: "{}" },
+      { type: "tool-call", toolCall: { id: "empty-call", name: "empty", arguments: "" } },
+      { type: "tool-call", toolCall: { id: "object-call", name: "object", arguments: {} } },
+      { type: "finish", finishReason: "tool-calls" },
+      { type: "finish", finishReason: "tool-calls" },
+    ]);
+  });
+
+  test("preserves malformed Chat tool argument fragments", async () => {
+    const source = [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"raw-call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]",
+    ].join("");
+    const result = await events(adapter(capture(stream(encoded(source)), [])).stream(request()));
+    expect(result).toEqual([
+      { type: "tool-call-delta", id: "raw-call", name: "weather", arguments: "{\"city\":" },
+      { type: "tool-call-delta", id: "raw-call", arguments: "Paris\"}" },
+      { type: "tool-call", toolCall: { id: "raw-call", name: "weather", arguments: "{\"city\":Paris\"}" } },
+      { type: "finish", finishReason: "tool-calls" },
     ]);
   });
 

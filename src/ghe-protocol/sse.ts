@@ -3,11 +3,12 @@ import { asObject, normalizeChatEvent, normalizeResponsesEvent } from "./normali
 import type { NormalizedStreamEvent } from "./types.ts";
 
 interface SseEvent { readonly event: string; readonly data: string; }
+interface ChatStreamToolCall { readonly id: string; readonly arguments: string; readonly emitted: boolean; readonly name?: string; }
 
 export async function* parseStream(body: ReadableStream<Uint8Array> | null, endpoint: "chat" | "responses", requestId: string): AsyncGenerator<NormalizedStreamEvent> {
   if (body === null) throw new MalformedResponseError(requestId);
   let completed = false;
-  const toolIds = new Map<number, string>();
+  const chatToolCalls = new Map<number, ChatStreamToolCall>();
   const responsesToolCalls = new Map<string, { readonly arguments: string; readonly emittedArguments: string; readonly id?: string; readonly name?: string }>();
   const completedResponsesToolCalls = { value: false };
   try {
@@ -19,7 +20,7 @@ export async function* parseStream(body: ReadableStream<Uint8Array> | null, endp
       const type = event.event || (typeof payload.type === "string" ? payload.type : "");
       if (type.endsWith("failed") || type.endsWith("error")) throw new MalformedResponseError(requestId);
       if (endpoint === "chat") {
-        for (const normalized of normalizeChatEvent(payload, toolIds)) yield normalized;
+        for (const normalized of normalizeChatEvent(payload, chatToolCalls)) yield normalized;
       } else {
         for (const normalized of normalizeResponsesEvent(type, payload, responsesToolCalls, completedResponsesToolCalls)) yield normalized;
         if (type === "response.completed") completed = true;
