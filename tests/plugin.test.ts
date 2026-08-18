@@ -73,7 +73,17 @@ describe("GHE plugin V2 registration", () => {
     } as unknown as GheProtocolAdapter;
     const plugin = createGhePlugin({ env, createAdapter: (config): GheProtocolAdapter => { configs.push(config); return adapter; } });
     await plugin.setup({
-      options: { baseUrl: "https://ghe.example.test", credential: { source: "env", name: "GHE_TOKEN" } },
+      options: {
+        baseUrl: "https://ghe.example.test",
+        credential: { source: "env", name: "GHE_TOKEN" },
+        profiles: {
+          "claude-sonnet-4.6": { id: "claude-sonnet-4.6", wireModel: "claude-sonnet-4.6", endpoint: "chat" },
+          "gpt-5.4": { id: "gpt-5.4", wireModel: "gpt-5.4", endpoint: "responses" },
+          "gpt-5.3-codex": { id: "gpt-5.3-codex", wireModel: "gpt-5.3-codex", endpoint: "responses" },
+          auto: { id: "auto", wireModel: "auto", endpoint: "chat" },
+          unknown: { id: "unknown", wireModel: "unknown", endpoint: "chat" },
+        },
+      },
       catalog: { transform: async (callback: (draft: unknown) => Promise<void>): Promise<void> => callback({
         provider: { update: (_: string, update: (target: Record<string, unknown>) => void): void => { const target: Record<string, unknown> = {}; update(target); providers.push(target); } },
         model: { update: (_: string, __: string, update: (target: Record<string, unknown>) => void): void => { const target: Record<string, unknown> = {}; update(target); models.push(target); } },
@@ -86,7 +96,17 @@ describe("GHE plugin V2 registration", () => {
     env.GHE_TOKEN = "second";
     expect(configs[0]?.credentialResolver?.resolve()).toBe("second");
     expect(providers).toHaveLength(1);
-    expect(models.map((model): unknown => model.id)).toEqual(BUILT_IN_MODEL_IDS);
+    expect(models.map((model): unknown => model.id)).toEqual([
+      ...BUILT_IN_MODEL_IDS,
+      "claude-sonnet-4.6",
+      "gpt-5.4",
+      "gpt-5.3-codex",
+      "auto",
+      "unknown",
+    ]);
+    const catalogLimits = new Map(models.map((model): [string, unknown] => [String(model.id), model.limit]));
+    expect(catalogLimits.get("auto")).toEqual({ context: 0, output: 0 });
+    expect(catalogLimits.get("unknown")).toEqual({ context: 0, output: 0 });
     const selected: Record<string, unknown> = { model: { providerID: "ghe", id: "claude-sonnet-5" }, package: "opencode-ghe" };
     const language: Record<string, unknown> = { model: { providerID: "ghe", id: "claude-sonnet-5" } };
     for (const id of BUILT_IN_MODEL_IDS) {
@@ -113,7 +133,7 @@ describe("GHE plugin V2 registration", () => {
     const unknown: Record<string, unknown> = { model: { providerID: "ghe", id: "unknown" } };
     const nonGhe: Record<string, unknown> = { model: { providerID: "other", id: "claude-sonnet-5" } };
     hooks.language?.(unknown); hooks.language?.(nonGhe);
-    expect(unknown.language).toBeUndefined(); expect(nonGhe.language).toBeUndefined();
-    expect((): LanguageModelV3 => (selected.sdk as { languageModel: (id: string) => LanguageModelV3 }).languageModel("unknown")).toThrow("Unsupported GHE model ID.");
+    expect(unknown.language).toMatchObject({ specificationVersion: "v3", provider: "ghe", modelId: "unknown" }); expect(nonGhe.language).toBeUndefined();
+    expect((selected.sdk as { languageModel: (id: string) => LanguageModelV3 }).languageModel("unknown")).toMatchObject({ specificationVersion: "v3", provider: "ghe", modelId: "unknown" });
   });
 });

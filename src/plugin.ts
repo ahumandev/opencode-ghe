@@ -200,6 +200,19 @@ export const GhePlugin: PluginModule = {
   },
 };
 
+type GheCatalogLimit = Readonly<{ context: number; output: number }>;
+
+const BMW_GHE_CATALOG_LIMITS: Readonly<Record<string, GheCatalogLimit>> = Object.freeze({
+  "gpt-5.4-mini": { context: 200000, output: 128000 },
+  "claude-haiku-4.5": { context: 200000, output: 64000 },
+  "claude-sonnet-5": { context: 1000000, output: 64000 },
+  "claude-sonnet-4.6": { context: 200000, output: 64000 },
+  "gpt-5.4": { context: 272000, output: 128000 },
+  "gpt-5.3-codex": { context: 200000, output: 128000 },
+  "gpt-5.6-terra": { context: 272000, output: 128000 },
+  "gpt-5.6-luna": { context: 200000, output: 128000 },
+});
+
 function createCatalogAdapter(draft: CatalogDraft): GheCatalogDraft {
   return {
     provider: {
@@ -234,7 +247,7 @@ function createCatalogAdapter(draft: CatalogDraft): GheCatalogDraft {
             cost: [],
             status: "active",
             enabled: model.enabled,
-            limit: { context: 0, output: 0 },
+            limit: BMW_GHE_CATALOG_LIMITS[modelID] ?? { context: 0, output: 0 },
           });
         });
       },
